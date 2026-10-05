@@ -78,9 +78,12 @@
     box-shadow: 0 0 0 1px rgba(0,0,0,0.3);
   }
   .tree-marker.orphan { background: #b8801a; }
+  /* label text scales with zoom: --label-size is set from the zoom level (8px zoomed out → 11px) */
+  .tree-label-icon { text-align: center; }
   .tree-label {
-    font-size: 11px; font-weight: 600; color: #2a5d2a;
-    background: rgba(255, 255, 255, 0.9); padding: 4px 6px; border-radius: 4px;
+    display: inline-block;
+    font-size: var(--label-size, 11px); font-weight: 600; color: #2a5d2a;
+    background: rgba(255, 255, 255, 0.9); padding: 0.3em 0.5em; border-radius: 4px;
     white-space: nowrap; text-shadow: 0 1px 1px rgba(255,255,255,0.8);
     cursor: pointer; border: 1px solid #d0e8d0;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
@@ -191,7 +194,7 @@ startPage({ page: "trees/", requireAuth: false, footer: false });
     const labelWidth = Math.max(60, Math.min(140, labelText.length * 7 + 12));
     const label = L.marker([lat, lng], {
       icon: L.divIcon({
-        className: '',
+        className: 'tree-label-icon',
         html: `<div class="tree-label">${labelText}</div>`,
         iconSize: [labelWidth, 20],
         iconAnchor: [labelWidth / 2, -8]
@@ -211,10 +214,13 @@ startPage({ page: "trees/", requireAuth: false, footer: false });
   // Update label visibility on zoom
   map.on('zoomend', function() {
     const zoom = map.getZoom();
-    const minDBH = zoom === -2 ? 20 : (zoom === -1 ? 15 : (zoom === 0 ? 10 : 0));
+    const labelSize = Math.max(8, Math.min(11, 11 + 1.5 * zoom));
+    document.getElementById('map').style.setProperty('--label-size', labelSize + 'px');
+    // Zoom moves in 0.25 steps, so use ranges: zoomed out, only the biggest trees get labels.
+    const minDBH = zoom < -1.5 ? 20 : zoom < -0.5 ? 15 : zoom < 0.5 ? 10 : 0;
 
     Object.entries(labelMarkersById).forEach(([id, data]) => {
-      if (data.dbh >= minDBH || zoom >= 1) {
+      if (data.dbh >= minDBH) {
         labelLayer.addLayer(data.marker);
       } else {
         labelLayer.removeLayer(data.marker);
