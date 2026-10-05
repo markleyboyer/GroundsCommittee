@@ -1,6 +1,6 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { onDocumentCreated, onDocumentWritten } = require("firebase-functions/v2/firestore");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { defineSecret, defineString } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
@@ -92,6 +92,27 @@ exports.deleteMember = onCall(async req => {
   await db.doc(`members/${uid}`).delete();
   await db.doc(`roster/${uid}`).delete();
   return { ok: true };
+});
+
+/* ---------------- login "stamps" (custom claims) used by storage.rules ---------------- */
+// Storage rules can't read Firestore without an extra IAM grant, so each account carries
+// {member, role, treasurer} copied from members/{uid}. Kept in sync on every change.
+async function syncClaims(uid, data) {
+  const claims = data && data.active !== false
+    ? { member: true, role: data.role || "member", treasurer: !!data.treasurer }
+    : { member: false };
+  await auth.setCustomUserClaims(uid, claims).catch(e => { if (e.code !== "auth/user-not-found") throw e; });
+  return claims;
+}
+
+exports.syncMemberClaims = onDocumentWritten("members/{uid}", event =>
+  syncClaims(event.params.uid, event.data?.after?.exists ? event.data.after.data() : null));
+
+// Called by the site when a signed-in person's stamp is missing or out of date.
+exports.refreshMyClaims = onCall(async req => {
+  if (!req.auth) throw new HttpsError("unauthenticated", "Please log in.");
+  const m = await db.doc(`members/${req.auth.uid}`).get();
+  return syncClaims(req.auth.uid, m.exists ? m.data() : null);
 });
 
 /* ---------------- read-only guest demo (admin switches it on/off) ---------------- */

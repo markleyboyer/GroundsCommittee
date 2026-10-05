@@ -143,6 +143,11 @@ export function startPage({ page, requireAuth = true, adminOnly = false, footer 
           if (m.exists() && m.data().active !== false) {
             const member = { uid: user.uid, ...m.data() };
             ctx = { user, member, isAdmin: member.role === "admin", isTreasurer: member.role === "admin" || !!member.treasurer, isDemo: member.role === "demo" };
+            // File storage checks the login's {member, role, treasurer} stamp; refresh it if stale.
+            const { claims } = await user.getIdTokenResult();
+            if (claims.member !== true || claims.role !== (member.role || "member") || !!claims.treasurer !== !!member.treasurer) {
+              await callFn("refreshMyClaims").then(() => user.getIdToken(true)).catch(e => console.warn("claims refresh failed", e));
+            }
           }
         }
         if ((requireAuth || adminOnly) && !ctx.member) {

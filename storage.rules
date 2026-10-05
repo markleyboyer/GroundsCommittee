@@ -1,19 +1,16 @@
 rules_version = '2';
 
 // Files: minutes are readable by every member; receipts only by the uploader, the treasurer and the admin.
+// Membership comes from the login's custom claims {member, role, treasurer}, which Cloud Functions copy
+// from members/{uid} (see syncClaims in functions/index.js). The guest demo (role "demo") can't open files.
 service firebase.storage {
   match /b/{bucket}/o {
-    function memberPath() { return /databases/(default)/documents/members/$(request.auth.uid); }
     function isMember() {
-      return request.auth != null && firestore.exists(memberPath())
-        && firestore.get(memberPath()).data.get('active', true) != false
-        && firestore.get(memberPath()).data.get('role', '') != 'demo';  // the guest demo can't open files
+      return request.auth != null && request.auth.token.get('member', false) == true
+        && request.auth.token.get('role', '') != 'demo';
     }
-    function isAdmin() { return isMember() && firestore.get(memberPath()).data.role == 'admin'; }
-    function isTreasurer() {
-      return isMember() && (firestore.get(memberPath()).data.role == 'admin'
-        || firestore.get(memberPath()).data.get('treasurer', false) == true);
-    }
+    function isAdmin() { return isMember() && request.auth.token.role == 'admin'; }
+    function isTreasurer() { return isMember() && (request.auth.token.role == 'admin' || request.auth.token.get('treasurer', false) == true); }
     function uploadOk(maxMb) {
       return isMember() && request.resource.size < maxMb * 1024 * 1024
         && request.resource.metadata.uploadedBy == request.auth.uid;
