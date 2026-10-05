@@ -266,7 +266,11 @@ document.getElementById("receipts").onclick = async e => {
   } catch (err) { fail(err); }
 };
 
-Promise.all([loadOrders(), loadReceipts()]).catch(fail);
+if (ctx.isDemo) {
+  document.getElementById("receipts-note").textContent = "Receipts are private to each building, the treasurer and the admin.";
+  document.getElementById("receipts").innerHTML = `<tr><td colspan="7" class="empty">Hidden in the guest view.</td></tr>`;
+  loadOrders().catch(fail);
+} else Promise.all([loadOrders(), loadReceipts()]).catch(fail);
 </script>
 </body>
 </html>

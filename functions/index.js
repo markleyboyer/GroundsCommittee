@@ -6,7 +6,7 @@ const { defineSecret, defineString } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
 const nodemailer = require("nodemailer");
-const { createMember } = require("./members");
+const { createMember, LOGIN_DOMAIN } = require("./members");
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -20,7 +20,7 @@ setGlobalOptions({ region: "us-central1", maxInstances: 3 });
 //   firebase functions:secrets:set SMTP_PASS   (a Gmail "app password")
 const SMTP_USER = defineSecret("SMTP_USER");
 const SMTP_PASS = defineSecret("SMTP_PASS");
-const SITE_URL = defineString("SITE_URL", { default: "https://markleyboyer.github.io/morningside-gardens-tree-map/" });
+const SITE_URL = defineString("SITE_URL", { default: "https://markleyboyer.github.io/GroundsCommittee/" });
 const SMTP_HOST = defineString("SMTP_HOST", { default: "smtp.gmail.com" });
 
 /* ---------------- helpers ---------------- */
@@ -92,6 +92,32 @@ exports.deleteMember = onCall(async req => {
   await db.doc(`members/${uid}`).delete();
   await db.doc(`roster/${uid}`).delete();
   return { ok: true };
+});
+
+/* ---------------- read-only guest demo (admin switches it on/off) ---------------- */
+const DEMO_EMAIL = `guest.demo@${LOGIN_DOMAIN}`;
+
+exports.setDemoAccess = onCall(async req => {
+  await requireAdmin(req);
+  const enabled = !!req.data?.enabled;
+  let user = await auth.getUserByEmail(DEMO_EMAIL).catch(e => { if (e.code === "auth/user-not-found") return null; throw e; });
+  if (!enabled) {
+    if (user) {
+      await auth.updateUser(user.uid, { disabled: true });
+      await auth.revokeRefreshTokens(user.uid);
+      await db.doc(`members/${user.uid}`).set({ active: false }, { merge: true });
+    }
+    await db.doc("public/demo").delete();
+    return { enabled: false };
+  }
+  // A fresh password each time it's switched on; it's published on purpose (the account is read-only).
+  const password = require("crypto").randomBytes(12).toString("base64url");
+  if (user) await auth.updateUser(user.uid, { password, disabled: false });
+  else user = await auth.createUser({ email: DEMO_EMAIL, password, displayName: "Guest" });
+  // Not in the roster, so the guest never appears in name lists or the minutes tally.
+  await db.doc(`members/${user.uid}`).set({ name: "Guest (demo)", email: "", building: "", role: "demo", treasurer: false, active: true, loginEmail: DEMO_EMAIL });
+  await db.doc("public/demo").set({ loginEmail: DEMO_EMAIL, password, enabledAt: new Date() });
+  return { enabled: true };
 });
 
 /* ---------------- daily meeting reminders ---------------- */

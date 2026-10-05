@@ -59,7 +59,7 @@ firebase deploy
 
 Commit and push. GitHub Pages already serves `docs/` from `main`, so the committee home page is at the repo's Pages URL and the tree map moves to `/trees/`.
 
-If you rename the repository (e.g. to `morningside-gardens-grounds`), GitHub redirects the old URL. Update `SITE_URL` in `functions/.env` and the authorized domain if the domain changes.
+The site is at https://markleyboyer.github.io/GroundsCommittee/. If you rename the repository again, update `SITE_URL` in `functions/.env` and the authorized domain if the domain changes.
 
 ## Day-to-day (admin)
 

@@ -47,6 +47,12 @@
     </div>
   </div>
 
+  <h2 id="guest">Guest demo</h2>
+  <div class="card cream" style="max-width:620px">
+    <p style="margin:0">While this is on, the login page has a <strong>Look around as a guest</strong> button that needs no password. Guests see the schedule, issues, committee year and bulb orders, read-only. They can't open uploaded files or see emails or receipts. Anyone with the site's address can use it, so turn it off when you no longer need it.</p>
+    <div class="actions"><span id="demo-state" class="chip grey">checking…</span><button class="btn" id="demo-toggle" disabled>…</button></div>
+  </div>
+
   <h2 id="settings">Reminders</h2>
   <div class="card cream" style="max-width:620px">
     <label>Email the minute-taker this many days before a meeting (comma-separated)</label>
@@ -211,6 +217,22 @@ document.getElementById("r-save").onclick = async () => {
     toast("Saved");
   } catch (err) { fail(err); }
 };
+
+/* ---------------- guest demo ---------------- */
+async function loadDemo() {
+  const on = (await getDoc(doc(db, "public", "demo"))).exists();
+  const st = document.getElementById("demo-state"), btn = document.getElementById("demo-toggle");
+  st.textContent = on ? "On" : "Off"; st.className = "chip " + (on ? "gold" : "grey");
+  btn.textContent = on ? "Turn off guest demo" : "Turn on guest demo";
+  btn.disabled = false;
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try { await callFn("setDemoAccess", { enabled: !on }); toast(on ? "Guest demo is off" : "Guest demo is on"); }
+    catch (err) { fail(err); }
+    await loadDemo();
+  };
+}
+loadDemo().catch(fail);
 
 loadMembers().catch(fail);
 </script>

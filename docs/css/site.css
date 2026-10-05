@@ -171,3 +171,8 @@ dialog h3 { margin-top: 0; }
 .stat { background: var(--cream-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
 .stat .n { font-family: var(--serif); font-size: 2rem; color: var(--green); line-height: 1; }
 .stat .l { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+
+/* read-only guest demo: hide everything that changes data */
+body.demo main .btn, body.demo main [data-act], body.demo main details, body.demo dialog { display: none !important; }
+body.demo [data-open] { pointer-events: none; color: inherit; text-decoration: none; }
+body.demo main .notice .btn { display: inline-flex !important; }

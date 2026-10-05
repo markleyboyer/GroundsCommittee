@@ -5,6 +5,7 @@ rules_version = '2';
 //   members          – read everything except other people's receipts; sign themselves up for minutes;
 //                      upload minutes; add/edit issues; post and join bulb orders; upload receipts
 //   treasurer        – additionally read every receipt and mark them reimbursed
+//   guest demo       – read-only: schedule, minutes list, issues, calendar, bulb orders (no files, emails or receipts)
 //   admin            – everything, incl. members, meetings, the committee-year calendar and settings
 // Member accounts are created by Cloud Functions (functions/index.js), never from the browser.
 service cloud.firestore {
@@ -12,7 +13,9 @@ service cloud.firestore {
     function signedIn() { return request.auth != null; }
     function memberPath() { return /databases/$(database)/documents/members/$(request.auth.uid); }
     function me() { return get(memberPath()).data; }
-    function isMember() { return signedIn() && exists(memberPath()) && me().get('active', true) != false; }
+    // isActive: any active account, including the read-only guest demo. isMember: a real committee member.
+    function isActive() { return signedIn() && exists(memberPath()) && me().get('active', true) != false; }
+    function isMember() { return isActive() && me().get('role', '') != 'demo'; }
     function isAdmin() { return isMember() && me().role == 'admin'; }
     function isTreasurer() { return isMember() && (me().role == 'admin' || me().get('treasurer', false) == true); }
     function changesOnly(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
@@ -27,50 +30,57 @@ service cloud.firestore {
         || (before == request.auth.uid && after == null);
     }
 
+    // Guest-demo login details, written only by the setDemoAccess function.
+    match /public/{name} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     match /roster/{uid} {
       allow read: if true;
       allow write: if isAdmin();
     }
 
     match /members/{uid} {
-      allow read: if isMember();
+      allow read: if isMember() || request.auth.uid == uid;
       allow update: if isAdmin()
         || (request.auth.uid == uid && isMember() && changesOnly(['email', 'building']));
       allow create, delete: if isAdmin();
     }
 
     match /meetings/{id} {
-      allow read: if isMember();
+      allow read: if isActive();
       allow create, delete: if isAdmin();
       allow update: if isAdmin()
         || (isMember() && changesOnly(['minuteTaker', 'backup']) && slotOk('minuteTaker') && slotOk('backup'));
     }
 
     match /minutes/{id} {
-      allow read: if isMember();
+      allow read: if isActive();
       allow create: if isMember() && request.resource.data.uploadedBy == request.auth.uid;
       allow update, delete: if isAdmin() || (isMember() && isMine('uploadedBy'));
     }
 
     match /issues/{id} {
-      allow read, create: if isMember();
+      allow read: if isActive();
+      allow create: if isMember();
       allow update: if isMember() && request.resource.data.get('createdBy', null) == resource.data.get('createdBy', null);
       allow delete: if isAdmin() || (isMember() && isMine('createdBy'));
     }
 
     match /calendar/{month} {
-      allow read: if isMember();
+      allow read: if isActive();
       allow write: if isAdmin();
     }
 
     match /settings/{name} {
-      allow read: if isMember();
+      allow read: if isActive();
       allow write: if isAdmin();
     }
 
     // Any member can add their building's lines or a comment to an order; only the poster/admin deletes it.
     match /bulbOrders/{id} {
-      allow read: if isMember();
+      allow read: if isActive();
       allow create: if isMember() && request.resource.data.postedBy == request.auth.uid;
       allow update: if isMember() && request.resource.data.postedBy == resource.data.postedBy;
       allow delete: if isAdmin() || (isMember() && isMine('postedBy'));

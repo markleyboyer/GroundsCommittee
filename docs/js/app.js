@@ -11,7 +11,10 @@ const useEmulators = ["localhost", "127.0.0.1"].includes(location.hostname) && n
   || sessionStorage.getItem("mg-emu") === "1";
 if (useEmulators) sessionStorage.setItem("mg-emu", "1");
 
-export const app = initializeApp(configured ? firebaseConfig : { ...firebaseConfig, apiKey: "placeholder", projectId: useEmulators ? "demo-grounds" : "placeholder" });
+// Emulator mode always uses the throwaway "demo-grounds" project, never the real one.
+export const app = initializeApp(useEmulators
+  ? { ...firebaseConfig, apiKey: "demo-key", projectId: "demo-grounds", storageBucket: "demo-grounds.appspot.com" }
+  : configured ? firebaseConfig : { ...firebaseConfig, apiKey: "placeholder", projectId: "placeholder" });
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const storage = getStorage(app);
@@ -89,11 +92,17 @@ function renderChrome(page, ctx) {
       <a class="brand" href="index.html">${TREE_SVG}<span class="word">Morningside<br>Gardens<small>Grounds Committee</small></span></a>
       <button class="btn secondary small menu-toggle" type="button">Menu</button>
       <nav class="nav">${links}</nav>
-      <div class="userbox">${ctx?.member
+      <div class="userbox">${ctx?.isDemo
+        ? `Guest (read-only) · <button class="linklike" id="signout">Sign out</button>`
+        : ctx?.member
         ? `${esc(ctx.member.name)} · <a href="account.html">Account</a> · <button class="linklike" id="signout">Sign out</button>`
         : `<a href="login.html">Committee log in</a>`}</div>
     </div>`;
   document.body.prepend(header);
+  if (ctx?.isDemo) {
+    document.body.classList.add("demo");
+    document.querySelector("main")?.insertAdjacentHTML("afterbegin", `<div class="notice">You're looking around as a <strong>guest</strong>. Everything is read-only, and uploaded files, member emails and receipts are hidden. <a href="login.html">Committee members log in here.</a></div>`);
+  }
   header.querySelector(".menu-toggle").onclick = () => header.querySelector(".nav").classList.toggle("open");
   header.querySelector("#signout")?.addEventListener("click", () => signOut(auth).then(() => location.href = "login.html"));
 
@@ -129,7 +138,7 @@ export function startPage({ page, requireAuth = true, adminOnly = false } = {}) 
           const m = await getDoc(doc(db, "members", user.uid));
           if (m.exists() && m.data().active !== false) {
             const member = { uid: user.uid, ...m.data() };
-            ctx = { user, member, isAdmin: member.role === "admin", isTreasurer: member.role === "admin" || !!member.treasurer };
+            ctx = { user, member, isAdmin: member.role === "admin", isTreasurer: member.role === "admin" || !!member.treasurer, isDemo: member.role === "demo" };
           }
         }
         if ((requireAuth || adminOnly) && !ctx.member) {
@@ -137,6 +146,7 @@ export function startPage({ page, requireAuth = true, adminOnly = false } = {}) 
           return;
         }
         if (adminOnly && !ctx.isAdmin) { location.href = "index.html"; return; }
+        if (ctx.isDemo && page === "account.html") { location.href = "index.html"; return; }
         if (ctx.member) {
           ctx.roster = await loadRoster();
           ctx.nameOf = uid => ctx.roster.byId[uid]?.name || (uid ? "(former member)" : "");

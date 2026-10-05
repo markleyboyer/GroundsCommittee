@@ -86,6 +86,7 @@ function slot(m, field) {
   const uid = m[field];
   const label = field === "minuteTaker" ? "Sign up" : "Be backup";
   if (m.status === "cancelled") return `<span class="muted">—</span>`;
+  if (!uid && ctx.isDemo) return `<span class="muted">open</span>`;
   if (!uid) return `<button class="btn small ${field === "backup" ? "secondary" : ""}" data-act="take" data-field="${field}" data-id="${m.id}">${label}</button>`;
   if (uid === me) return `<strong>You</strong> <button class="linklike small" data-act="drop" data-field="${field}" data-id="${m.id}">withdraw</button>`;
   return esc(ctx.nameOf(uid));
