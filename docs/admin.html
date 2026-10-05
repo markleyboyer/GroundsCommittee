@@ -81,10 +81,11 @@
 
 <script type="module">
 import { startPage, db, callFn, esc, fmtDate, fmtTime, fail, toast, openDialog, todayISO, MONTHS, BUILDINGS } from "./js/app.js";
+import { treePassword, browserRandInt } from "./js/tree-password.js";
 import { collection, getDocs, getDoc, doc, setDoc, updateDoc, addDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 const ctx = await startPage({ page: "admin.html", adminOnly: true });
-const randomPw = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), b => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("") + "-" + Array.from(crypto.getRandomValues(new Uint8Array(4)), b => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("");
+const randomPw = () => treePassword(browserRandInt);
 
 /* ---------------- members ---------------- */
 let members = [];

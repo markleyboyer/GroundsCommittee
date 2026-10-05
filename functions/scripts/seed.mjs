@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { readFileSync, writeFileSync } from "node:fs";
 import { randomInt } from "node:crypto";
 import { CALENDAR_DRAFT } from "../../docs/js/calendar-draft.js";
+import { treePassword } from "../../docs/js/tree-password.js";
 
 const require = createRequire(import.meta.url);
 const admin = require("firebase-admin");
@@ -31,7 +32,7 @@ if (keyPath) {
 }
 const db = admin.firestore(), auth = admin.auth();
 
-const pw = () => Array.from({ length: 10 }, () => "abcdefghjkmnpqrstuvwxyz23456789"[randomInt(31)]).join("").replace(/^(.{5})/, "$1-");
+const pw = () => treePassword(randomInt);
 
 // --- members
 const existing = new Set((await db.collection("roster").get()).docs.map(d => d.data().name));

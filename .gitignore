@@ -4,3 +4,4 @@ functions/initial-passwords.txt
 *.log
 .firebase/
 functions/.secret.local
+functions/members-update.json

@@ -83,20 +83,23 @@ const NAV = [
   ["trees/", "Tree Map"],
 ];
 
-function renderChrome(page, ctx) {
+// Pages in a subfolder (the tree map at trees/) need links that point back up one level.
+const ROOT = location.pathname.includes("/trees/") ? "../" : "";
+
+function renderChrome(page, ctx, { footer: withFooter = true } = {}) {
   const header = document.createElement("header");
   header.className = "site-header";
   const links = [...NAV, ...(ctx?.isAdmin ? [["admin.html", "Admin"]] : [])]
-    .map(([href, label]) => `<a href="${href}" class="${href === page ? "active" : ""}">${label}</a>`).join("");
+    .map(([href, label]) => `<a href="${ROOT}${href}" class="${href === page ? "active" : ""}">${label}</a>`).join("");
   header.innerHTML = `<div class="inner">
-      <a class="brand" href="index.html">${TREE_SVG}<span class="word">Morningside<br>Gardens<small>Grounds Committee</small></span></a>
+      <a class="brand" href="${ROOT}index.html">${TREE_SVG}<span class="word">Morningside<br>Gardens<small>Grounds Committee</small></span></a>
       <button class="btn secondary small menu-toggle" type="button">Menu</button>
       <nav class="nav">${links}</nav>
       <div class="userbox">${ctx?.isDemo
         ? `Guest (read-only) · <button class="linklike" id="signout">Sign out</button>`
         : ctx?.member
-        ? `${esc(ctx.member.name)} · <a href="account.html">Account</a> · <button class="linklike" id="signout">Sign out</button>`
-        : `<a href="login.html">Committee log in</a>`}</div>
+        ? `${esc(ctx.member.name)} · <a href="${ROOT}account.html">Account</a> · <button class="linklike" id="signout">Sign out</button>`
+        : `<a href="${ROOT}login.html">Committee log in</a>`}</div>
     </div>`;
   document.body.prepend(header);
   if (ctx?.isDemo) {
@@ -104,8 +107,9 @@ function renderChrome(page, ctx) {
     document.querySelector("main")?.insertAdjacentHTML("afterbegin", `<div class="notice">You're looking around as a <strong>guest</strong>. Everything is read-only, and uploaded files, member emails and receipts are hidden. <a href="login.html">Committee members log in here.</a></div>`);
   }
   header.querySelector(".menu-toggle").onclick = () => header.querySelector(".nav").classList.toggle("open");
-  header.querySelector("#signout")?.addEventListener("click", () => signOut(auth).then(() => location.href = "login.html"));
+  header.querySelector("#signout")?.addEventListener("click", () => signOut(auth).then(() => location.href = ROOT + "login.html"));
 
+  if (!withFooter) return;
   const footer = document.createElement("footer");
   footer.className = "site-footer";
   footer.innerHTML = `<div class="inner"><span>Morningside Gardens Grounds Committee · meets the first Monday of the month</span><a href="https://www.morningsidegardens.com/">morningsidegardens.com</a></div>`;
@@ -122,11 +126,11 @@ async function loadRoster() {
  * Call at the top of every page.
  * Resolves with { user, member, isAdmin, isTreasurer, roster, nameOf } or redirects to login.
  */
-export function startPage({ page, requireAuth = true, adminOnly = false } = {}) {
+export function startPage({ page, requireAuth = true, adminOnly = false, footer = true } = {}) {
   const main = document.querySelector("main");
   if (!configured && !useEmulators) {
-    renderChrome(page, null);
-    main.insertAdjacentHTML("afterbegin", `<div class="notice"><strong>Setup needed:</strong> this site isn't connected to Firebase yet. Follow <code>SETUP.md</code> in the repository and paste your config into <code>docs/js/firebase-config.js</code>.</div>`);
+    renderChrome(page, null, { footer });
+    main?.insertAdjacentHTML("afterbegin", `<div class="notice"><strong>Setup needed:</strong> this site isn't connected to Firebase yet. Follow <code>SETUP.md</code> in the repository and paste your config into <code>docs/js/firebase-config.js</code>.</div>`);
     return new Promise(() => {}); // never resolves; page stays in its static state
   }
   return new Promise(resolve => {
@@ -152,7 +156,7 @@ export function startPage({ page, requireAuth = true, adminOnly = false } = {}) 
           ctx.nameOf = uid => ctx.roster.byId[uid]?.name || (uid ? "(former member)" : "");
         }
       } catch (e) { fail(e); }
-      renderChrome(page, ctx);
+      renderChrome(page, ctx, { footer });
       resolve(ctx);
     });
   });
