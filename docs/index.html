@@ -1,349 +1,67 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Morningside Gardens Tree Map</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<style>
-  html, body { margin: 0; padding: 0; height: 100%; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
-  #app { display: flex; height: 100vh; }
-  #map { flex: 1; background: #f4f1ea; }
-  #sidebar {
-    width: 320px; border-left: 1px solid #d8d4c8; background: #fafaf6;
-    overflow-y: auto; padding: 12px 14px;
-  }
-  #coords {
-    position: fixed; bottom: 10px; left: 10px; background: rgba(0,0,0,0.7);
-    color: white; padding: 6px 10px; border-radius: 4px; font-size: 12px;
-    font-family: monospace; z-index: 1000;
-  }
-  h1 { font-size: 18px; margin: 0 0 8px; }
-  .meta { font-size: 12px; color: #555; margin-bottom: 12px; }
-  .filter { margin-bottom: 10px; }
-  .filter input, .filter select {
-    width: 100%; box-sizing: border-box; padding: 6px 8px;
-    font-size: 13px; border: 1px solid #c8c3b3; border-radius: 4px;
-    margin-bottom: 6px; background: white;
-  }
-  .tree-list-table {
-    width: 100%; border-collapse: collapse; font-size: 12px;
-  }
-  .tree-list-table thead {
-    background: #e8ebe0; position: sticky; top: 0; z-index: 10;
-  }
-  .tree-list-table th {
-    padding: 6px 4px; text-align: left; font-weight: 600; color: #2a5d2a;
-    border-bottom: 1px solid #d0d4c8; font-size: 11px;
-  }
-  .tree-list-table th.sortable {
-    cursor: pointer; user-select: none;
-  }
-  .tree-list-table th.sortable:hover {
-    background: #dfe5d8;
-  }
-  .tree-list-table th.sortable::after {
-    content: ' ⇅'; font-size: 9px; opacity: 0.5;
-  }
-  .tree-list-table th.sortable.asc::after {
-    content: ' ↑'; opacity: 1;
-  }
-  .tree-list-table th.sortable.desc::after {
-    content: ' ↓'; opacity: 1;
-  }
-  .tree-list-table td {
-    padding: 6px 4px; border-bottom: 1px solid #ece8da; vertical-align: top;
-  }
-  .tree-list-table tbody tr:hover {
-    background: #f5f2eb; cursor: pointer;
-  }
-  .tree-list-table .id { font-weight: 600; color: #2a5d2a; width: 50px; }
-  .tree-list-table .name { font-weight: 500; }
-  .tree-list-table .botanical { font-size: 11px; color: #666; font-style: italic; }
-  .tree-list-table .meta { font-size: 11px; color: #777; }
-  .leaflet-popup-content { font-size: 13px; line-height: 1.4; min-width: 200px; }
-  .leaflet-popup-content .tid { font-weight: 600; color: #2a5d2a; font-size: 14px; }
-  .leaflet-popup-content .bot { font-style: italic; color: #555; }
-  .leaflet-popup-content table { font-size: 12px; margin-top: 6px; border-collapse: collapse; }
-  .leaflet-popup-content table td { padding: 1px 6px 1px 0; vertical-align: top; }
-  .leaflet-popup-content table td.k { color: #777; }
-  .tree-marker {
-    background: #2a8a2a; border: 2px solid white; border-radius: 50%;
-    width: 12px; height: 12px;
-    box-shadow: 0 0 0 1px rgba(0,0,0,0.3);
-  }
-  .tree-marker.orphan { background: #b8801a; }
-  .tree-label {
-    font-size: 11px; font-weight: 600; color: #2a5d2a;
-    background: rgba(255, 255, 255, 0.9); padding: 4px 6px; border-radius: 4px;
-    white-space: nowrap; text-shadow: 0 1px 1px rgba(255,255,255,0.8);
-    cursor: pointer; border: 1px solid #d0e8d0;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    transition: all 0.2s ease;
-  }
-  .tree-label:hover {
-    background: rgba(42, 141, 42, 0.1); border-color: #2a8a2a;
-  }
-</style>
+<title>Grounds Committee · Morningside Gardens</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500;600&family=Jost:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
 </head>
 <body>
-<div id="app">
-  <div id="map"></div>
-  <div id="coords">Move mouse to see coordinates, click to log</div>
-  <aside id="sidebar">
-    <h1>Morningside Gardens Tree Map</h1>
-    <div class="meta" id="meta">loading…</div>
-    <div class="filter">
-      <input type="search" id="q" placeholder="Search ID, common, or botanical name…">
-      <select id="quad">
-        <option value="">All quadrants</option>
-        <option value="NW">NW</option>
-        <option value="NE">NE</option>
-        <option value="SW">SW</option>
-        <option value="SE">SE</option>
-      </select>
+<main>
+  <h1>Grounds Committee</h1>
+  <p class="lede">The Morningside Gardens Grounds Committee meets on the first Monday of the month at 6:30 pm, with a break over the summer. Committee members can log in to sign up to take minutes, read past minutes, follow open issues, and share bulb orders between buildings.</p>
+
+  <section id="dash" class="hidden">
+    <div class="grid" style="margin-bottom:8px">
+      <div class="card cream" id="next-meeting"></div>
+      <div class="card cream" id="this-month"></div>
+      <div class="card cream" id="issue-summary"></div>
     </div>
-    <table class="tree-list-table">
-      <thead>
-        <tr>
-          <th class="sortable" data-sort="common_name">Tree Name</th>
-          <th class="sortable" data-sort="botanical_name">Botanical</th>
-          <th class="sortable" data-sort="dba_2020">DBH</th>
-          <th class="sortable" data-sort="planted">Planted</th>
-          <th class="sortable" data-sort="id">Quadrant</th>
-        </tr>
-      </thead>
-      <tbody id="list"></tbody>
-    </table>
-  </aside>
-</div>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script>
-(async function() {
-  const trees = await fetch('data/trees.json?v=' + Date.now()).then(r => r.json());
+  </section>
 
-  // Image dimensions: 3395 x 2242 (matches assets/map.png)
-  const W = 3395, H = 2242;
+  <h2>Committee pages</h2>
+  <div class="grid">
+    <a class="tile" href="schedule.html"><h3>Minutes Schedule</h3><p>Sign up to take minutes at a meeting, and see who has taken them so far.</p><span class="more">Sign up</span></a>
+    <a class="tile" href="minutes.html"><h3>Minutes Archive</h3><p>Past minutes, plus a place to upload the ones you took.</p><span class="more">Browse</span></a>
+    <a class="tile" href="issues.html"><h3>Ongoing Issues</h3><p>Open items the committee is following, with updates from each meeting.</p><span class="more">View issues</span></a>
+    <a class="tile" href="calendar.html"><h3>Committee Year</h3><p>What usually comes before the committee in each month of the year.</p><span class="more">See the year</span></a>
+    <a class="tile" href="bulbs.html"><h3>Bulb Orders</h3><p>Bulb suppliers, orders the buildings are planning together, and receipt uploads for the treasurer.</p><span class="more">Plan bulbs</span></a>
+    <a class="tile" href="trees/"><h3>Tree Map</h3><p>Every tree on the grounds, with species, size and planting year.</p><span class="more">Open map</span></a>
+  </div>
+</main>
+<script type="module">
+import { startPage, db, esc, fmtDate, fmtTime, todayISO, MONTHS } from "./js/app.js";
+import { collection, getDocs, query, where, orderBy, limit, doc, getDoc } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
-  // Use Leaflet in CRS.Simple mode so [y, x] image coords work directly.
-  const map = L.map('map', {
-    crs: L.CRS.Simple,
-    minZoom: -2.2,
-    maxZoom: 2,
-    zoomSnap: 0.25,
-    attributionControl: false
-  });
-  const bounds = [[0, 0], [H, W]];
-  L.imageOverlay('assets/map.png', bounds).addTo(map);
-  map.fitBounds(bounds);
-  map.setMaxBounds([[-200, -200], [H + 200, W + 200]]);
+const ctx = await startPage({ page: "index.html", requireAuth: false });
+if (ctx.member) {
+  document.getElementById("dash").classList.remove("hidden");
+  const today = todayISO();
 
-  function popupHtml(t) {
-    const rows = [];
-    if (t.botanical_name) rows.push(['Botanical', `<i>${t.botanical_name}</i>`]);
-    if (t.trefle_family) rows.push(['Family', t.trefle_family]);
-    if (t.dba_2020) rows.push(['DBH 2020', t.dba_2020]);
-    if (t.planted) rows.push(['Planted', t.planted]);
-    if (t.note) rows.push(['Note', t.note]);
-    // Add pixel coordinates
-    rows.push(['Position', `(${Math.round(t.x)}, ${Math.round(t.y)})`]);
+  const ms = await getDocs(query(collection(db, "meetings"), where("date", ">=", today), orderBy("date"), limit(4)));
+  const upcoming = ms.docs.map(d => d.data()).filter(m => m.status !== "cancelled");
+  const nm = upcoming[0];
+  document.getElementById("next-meeting").innerHTML = nm
+    ? `<h3>Next meeting</h3><p style="margin:0">${fmtDate(nm.date, { weekday: "long", month: "long", day: "numeric" })} · ${fmtTime(nm.time)}${nm.location ? ` · ${esc(nm.location)}` : ""}</p>
+       <p style="margin:8px 0 12px">Minutes: ${nm.minuteTaker ? `<strong>${esc(ctx.nameOf(nm.minuteTaker))}</strong>` : `<span class="chip gold">Needs a volunteer</span>`}</p>
+       <a class="more" href="schedule.html">Schedule</a>`
+    : `<h3>Next meeting</h3><p class="muted">No meetings scheduled yet.</p><a class="more" href="schedule.html">Schedule</a>`;
 
-    const tbl = rows.length
-      ? `<table>${rows.map(([k,v]) => `<tr><td class="k">${k}</td><td>${v}</td></tr>`).join('')}</table>`
-      : '';
+  const month = Number(today.slice(5, 7));
+  const cal = await getDoc(doc(db, "calendar", String(month)));
+  const items = cal.exists() ? cal.data().items || [] : [];
+  document.getElementById("this-month").innerHTML = `<h3>Usually in ${MONTHS[month - 1]}</h3>
+    ${items.length ? `<ul style="margin:0 0 12px;padding-left:18px">${items.slice(0, 4).map(i => `<li class="small">${esc(i.title)}</li>`).join("")}</ul>` : `<p class="muted">Nothing listed.</p>`}
+    <a class="more" href="calendar.html">Committee year</a>`;
 
-    // Use Trefle common name if available, fallback to table
-    const cn = t.trefle_common || t.common_name || '<span style="color:#999">(no species data)</span>';
-    const link = t.trefle_slug ? ` <a href="https://trefle.io/${t.trefle_slug}" target="_blank" style="font-size:11px;color:#2a8a2a">📖</a>` : '';
-
-    return `<div class="tid">${t.id}${link}</div><div>${cn}</div>${tbl}`;
-  }
-
-  const markersById = {};
-  const labelMarkersById = {};
-  const popupMarkerLayer = L.layerGroup().addTo(map); // Hidden, only for popup binding
-  const labelLayer = L.layerGroup().addTo(map);
-
-  trees.forEach(t => {
-    if (t.x == null || t.y == null) return;
-    // Coordinate mapping: flip x horizontally
-    const lat = t.y;
-    const lng = W - t.x;
-
-    // Create hidden popup marker
-    const popupMarker = L.marker([lat, lng], {
-      icon: L.divIcon({ className: 'hidden', html: '', iconSize: [0, 0] })
-    }).addTo(popupMarkerLayer);
-    popupMarker.bindPopup(popupHtml(t));
-
-    // Create clickable label
-    const labelText = t.trefle_common || t.common_name || t.id;
-    // Calculate width based on text length (roughly 7px per character + padding)
-    const labelWidth = Math.max(60, Math.min(140, labelText.length * 7 + 12));
-    const label = L.marker([lat, lng], {
-      icon: L.divIcon({
-        className: '',
-        html: `<div class="tree-label">${labelText}</div>`,
-        iconSize: [labelWidth, 20],
-        iconAnchor: [labelWidth / 2, -8]
-      })
-    }).addTo(labelLayer);
-
-    // Make label clickable to show popup
-    label.on('click', function() {
-      map.flyTo([lat, lng], 0.5, { duration: 0.5 });
-      popupMarker.openPopup();
-    });
-
-    markersById[t.id] = popupMarker;
-    labelMarkersById[t.id] = { marker: label, dbh: parseFloat(t.dba_2020) || 0 };
-  });
-
-  // Update label visibility on zoom
-  map.on('zoomend', function() {
-    const zoom = map.getZoom();
-    const minDBH = zoom === -2 ? 20 : (zoom === -1 ? 15 : (zoom === 0 ? 10 : 0));
-
-    Object.entries(labelMarkersById).forEach(([id, data]) => {
-      if (data.dbh >= minDBH || zoom >= 1) {
-        labelLayer.addLayer(data.marker);
-      } else {
-        labelLayer.removeLayer(data.marker);
-      }
-    });
-  });
-
-  // Initial zoom filtering
-  map.fire('zoomend');
-
-  // Sidebar: stats + list
-  const withPos = trees.filter(t => t.x != null).length;
-  const withData = trees.filter(t => t.has_table_data).length;
-  document.getElementById('meta').textContent =
-    `${trees.length} trees · ${withPos} on map · ${withData} with species data`;
-
-  const listEl = document.getElementById('list');
-  const qEl = document.getElementById('q');
-  const quadEl = document.getElementById('quad');
-
-  let sortField = 'common_name';
-  let sortAsc = true;
-
-  function render() {
-    const q = qEl.value.trim().toLowerCase();
-    const quad = quadEl.value;
-    const currentZoom = map.getZoom();
-
-    let items = trees.filter(t => {
-      if (quad && !t.id.startsWith(quad)) return false;
-      if (q) {
-        const hay = `${t.id} ${t.common_name} ${t.botanical_name}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-
-      if (currentZoom < 1 && t.dba_2020) {
-        const dbh = parseFloat(t.dba_2020);
-        const minDBH = currentZoom === -2 ? 20 : (currentZoom === -1 ? 15 : 10);
-        if (isNaN(dbh) || dbh < minDBH) return false;
-      }
-
-      return true;
-    });
-
-    // Sort items
-    items.sort((a, b) => {
-      let aVal = a[sortField] || '';
-      let bVal = b[sortField] || '';
-
-      if (sortField === 'dba_2020') {
-        aVal = parseFloat(aVal) || 0;
-        bVal = parseFloat(bVal) || 0;
-      } else {
-        aVal = String(aVal).toLowerCase();
-        bVal = String(bVal).toLowerCase();
-      }
-
-      const cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
-      return sortAsc ? cmp : -cmp;
-    });
-
-    listEl.innerHTML = items.slice(0, 400).map(t => {
-      const quadrant = t.id.split('-')[0];
-      const cn = t.trefle_common || t.common_name || '<span style="color:#999">unknown</span>';
-      const bot = t.botanical_name || '—';
-      const dbh = t.dba_2020 ? `${t.dba_2020}"` : '—';
-      const planted = t.planted || '—';
-      const noPos = t.x == null ? ' <span style="color:#b8801a">(no map pos)</span>' : '';
-      return `<tr data-id="${t.id}">
-        <td class="name">${cn}</td>
-        <td class="botanical" style="font-size:11px;color:#666;font-style:italic">${bot}</td>
-        <td class="meta">${dbh}</td>
-        <td class="meta">${planted}</td>
-        <td class="id">${quadrant}</td>
-      </tr>${noPos ? `<tr><td colspan="5" style="padding:0;font-size:11px;color:#b8801a">${noPos}</td></tr>` : ''}`;
-    }).join('');
-  }
-  render();
-
-  // Column sorting
-  document.querySelectorAll('.tree-list-table th.sortable').forEach(th => {
-    th.addEventListener('click', function() {
-      const newField = this.dataset.sort;
-      if (sortField === newField) {
-        sortAsc = !sortAsc;
-      } else {
-        sortField = newField;
-        sortAsc = true;
-      }
-      // Update visual indicators
-      document.querySelectorAll('.tree-list-table th.sortable').forEach(h => {
-        h.classList.remove('asc', 'desc');
-      });
-      this.classList.add(sortAsc ? 'asc' : 'desc');
-      render();
-    });
-  });
-  // Set initial sort indicator
-  document.querySelector('[data-sort="common_name"]').classList.add('asc');
-
-  qEl.addEventListener('input', render);
-  quadEl.addEventListener('change', render);
-  map.on('zoomend', render);
-
-  // Coordinate tracker for debugging - shows absolute image coordinates
-  const coordsEl = document.getElementById('coords');
-  let lastCoords = null;
-
-  function getImageCoords(latlng) {
-    // In CRS.Simple, lat = y and lng = x in the image
-    // But we need to account for the horizontal flip: lng = W - x
-    const imageY = Math.round(latlng.lat);
-    const imageX = Math.round(W - latlng.lng);
-    return { x: imageX, y: imageY };
-  }
-
-  map.on('mousemove', function(e) {
-    const coords = getImageCoords(e.latlng);
-    coordsEl.textContent = `x: ${coords.x}, y: ${coords.y}`;
-  });
-
-  map.on('click', function(e) {
-    const coords = getImageCoords(e.latlng);
-    lastCoords = coords;
-    coordsEl.textContent = `CLICKED: x: ${coords.x}, y: ${coords.y} (copy this info)`;
-    console.log(`Clicked position: x=${coords.x}, y=${coords.y}`);
-  });
-
-  listEl.addEventListener('click', e => {
-    const row = e.target.closest('tr');
-    if (!row) return;
-    const id = row.dataset.id;
-    const m = markersById[id];
-    if (!m) return;
-    map.flyTo(m.getLatLng(), 0.5, { duration: 0.5 });
-    m.openPopup();
-  });
-})();
+  const is = await getDocs(query(collection(db, "issues"), where("status", "in", ["open", "in progress", "waiting"])));
+  const n = is.size;
+  document.getElementById("issue-summary").innerHTML = `<h3>Ongoing issues</h3>
+    <p style="margin:0 0 12px"><span style="font-family:var(--serif);font-size:2.2rem;color:var(--green)">${n}</span> open</p>
+    <a class="more" href="issues.html">See issues</a>`;
+}
 </script>
 </body>
 </html>

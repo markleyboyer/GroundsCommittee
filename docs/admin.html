@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin · Grounds Committee</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500;600&family=Jost:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<main>
+  <h1>Admin</h1>
+
+  <h2 id="members">Members</h2>
+  <p class="small muted" style="margin-top:-6px">The email address is used only for reminders and notices. Members log in by choosing their name. Mark one or more members as treasurer so they can see every receipt and get receipt emails.</p>
+  <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Name</th><th>Email</th><th>Building</th><th>Role</th><th>Treasurer</th><th>Status</th><th></th></tr></thead>
+      <tbody id="member-rows"></tbody>
+    </table>
+  </div>
+  <div class="actions"><button class="btn" id="add-member">Add member</button></div>
+
+  <h2 id="meetings">Meetings</h2>
+  <div class="card cream">
+    <h3>Generate a year of meetings</h3>
+    <p class="small muted" style="margin:0">Creates one meeting on the first Monday of each month you tick. Months that already have a meeting are left alone, so it's safe to run again. Afterwards you can move or cancel any single meeting on the <a href="schedule.html">schedule page</a>.</p>
+    <div class="row">
+      <div><label>Year</label><input id="g-year" type="number" min="2020" max="2100"></div>
+      <div><label>Time</label><input id="g-time" type="time" value="18:30"></div>
+      <div style="flex:2 1 260px"><label>Location (optional)</label><input id="g-loc"></div>
+    </div>
+    <label>Months with a meeting</label>
+    <div id="g-months" style="display:flex;flex-wrap:wrap;gap:6px 16px"></div>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="g-holiday" checked> When the first Monday is a holiday (Labor Day, New Year's Day), use the second Monday</label>
+    <div class="actions"><button class="btn secondary" id="g-preview">Preview</button><button class="btn hidden" id="g-create">Create these meetings</button></div>
+    <div id="g-out" class="small" style="margin-top:10px"></div>
+  </div>
+  <div class="card cream" style="margin-top:16px">
+    <h3>Add a single meeting</h3>
+    <div class="row" style="align-items:flex-end">
+      <div><label>Date</label><input id="s-date" type="date"></div>
+      <div><label>Time</label><input id="s-time" type="time" value="18:30"></div>
+      <div style="flex:2 1 200px"><label>Note</label><input id="s-note" placeholder="e.g. Special meeting on the tree budget"></div>
+      <div style="flex:0 0 auto"><button class="btn" id="s-add">Add</button></div>
+    </div>
+  </div>
+
+  <h2 id="guest">Guest demo</h2>
+  <div class="card cream" style="max-width:620px">
+    <p style="margin:0">While this is on, the login page has a <strong>Look around as a guest</strong> button that needs no password. Guests see the schedule, issues, committee year and bulb orders, read-only. They can't open uploaded files or see emails or receipts. Anyone with the site's address can use it, so turn it off when you no longer need it.</p>
+    <div class="actions"><span id="demo-state" class="chip grey">checking…</span><button class="btn" id="demo-toggle" disabled>…</button></div>
+  </div>
+
+  <h2 id="settings">Reminders</h2>
+  <div class="card cream" style="max-width:620px">
+    <label>Email the minute-taker this many days before a meeting (comma-separated)</label>
+    <input id="r-days" placeholder="7, 1">
+    <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="r-ask"> If nobody has signed up a week before, email all members asking for a volunteer</label>
+    <label>Default meeting location (shown in reminders)</label><input id="r-loc">
+    <div class="actions"><button class="btn" id="r-save">Save</button></div>
+  </div>
+</main>
+
+<dialog id="m-dlg">
+  <form method="dialog">
+    <h3 id="m-title">Add member</h3>
+    <label>Full name</label><input name="name" required>
+    <label>Email (for reminders)</label><input name="email" type="email">
+    <div class="row">
+      <div><label>Building</label><select name="building"></select></div>
+      <div><label>Role</label><select name="role"><option value="member">Member</option><option value="admin">Admin</option></select></div>
+    </div>
+    <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="treasurer"> Treasurer (sees all receipts)</label>
+    <div id="pw-wrap"><label>Starting password (at least 8 characters)</label><input name="password" minlength="8">
+    <p class="small muted" style="margin:4px 0 0">Give this to the member. They can change it on their Account page.</p></div>
+    <div class="actions"><button class="btn" value="save">Save</button><button class="btn secondary" data-close>Cancel</button></div>
+  </form>
+</dialog>
+
+<script type="module">
+import { startPage, db, callFn, esc, fmtDate, fmtTime, fail, toast, openDialog, todayISO, MONTHS, BUILDINGS } from "./js/app.js";
+import { collection, getDocs, getDoc, doc, setDoc, updateDoc, addDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+const ctx = await startPage({ page: "admin.html", adminOnly: true });
+const randomPw = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), b => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("") + "-" + Array.from(crypto.getRandomValues(new Uint8Array(4)), b => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("");
+
+/* ---------------- members ---------------- */
+let members = [];
+async function loadMembers() {
+  const snap = await getDocs(query(collection(db, "members"), orderBy("name")));
+  members = snap.docs.map(d => ({ uid: d.id, ...d.data() }));
+  document.getElementById("member-rows").innerHTML = members.map(m => `<tr data-uid="${m.uid}" class="${m.active === false ? "past" : ""}">
+    <td><strong>${esc(m.name)}</strong></td><td class="small">${esc(m.email || "")}</td><td class="small">${esc(m.building || "")}</td>
+    <td>${m.role === "admin" ? `<span class="chip gold">admin</span>` : "member"}</td>
+    <td>${m.treasurer ? "✓" : ""}</td>
+    <td>${m.active === false ? `<span class="chip grey">inactive</span>` : `<span class="chip">active</span>`}</td>
+    <td style="white-space:nowrap">
+      <button class="btn secondary small" data-act="edit">Edit</button>
+      <button class="btn secondary small" data-act="pw">Reset password</button>
+      ${m.uid !== ctx.user.uid ? `<button class="btn secondary small" data-act="active">${m.active === false ? "Reactivate" : "Deactivate"}</button>
+      <button class="btn danger small" data-act="remove">Remove</button>` : ""}
+    </td></tr>`).join("");
+}
+
+document.getElementById("member-rows").onclick = async e => {
+  const b = e.target.closest("[data-act]"); if (!b) return;
+  const m = members.find(x => x.uid === b.closest("tr").dataset.uid);
+  try {
+    if (b.dataset.act === "edit") return memberDialog(m);
+    if (b.dataset.act === "pw") {
+      const pw = prompt(`New password for ${m.name} (at least 8 characters):`, randomPw());
+      if (!pw) return;
+      await callFn("setMemberPassword", { uid: m.uid, password: pw });
+      alert(`Password for ${m.name} is now:\n\n${pw}\n\nPass it on to them; they can change it on their Account page.`);
+    } else if (b.dataset.act === "active") {
+      await callFn("setMemberActive", { uid: m.uid, active: m.active === false });
+      toast(m.active === false ? "Reactivated" : "Deactivated. They can no longer log in, but their history stays.");
+    } else if (b.dataset.act === "remove") {
+      if (!confirm(`Permanently remove ${m.name}? Past minutes and history will show “(former member)”. Deactivating keeps their name.`)) return;
+      await callFn("deleteMember", { uid: m.uid });
+      toast("Removed");
+    }
+    await loadMembers();
+  } catch (err) { fail(err); }
+};
+
+document.getElementById("add-member").onclick = () => memberDialog(null);
+
+function memberDialog(m) {
+  const dlg = document.getElementById("m-dlg"), f = dlg.querySelector("form");
+  document.getElementById("m-title").textContent = m ? `Edit ${m.name}` : "Add member";
+  document.getElementById("pw-wrap").classList.toggle("hidden", !!m);
+  f.password.required = !m;
+  f.building.innerHTML = `<option value="">—</option>` + BUILDINGS.map(b => `<option>${b}</option>`).join("");
+  f.name.value = m?.name || ""; f.email.value = m?.email || ""; f.building.value = m?.building || "";
+  f.role.value = m?.role || "member"; f.treasurer.checked = !!m?.treasurer; f.password.value = m ? "" : randomPw();
+  dlg.returnValue = "";
+  dlg.onclose = async () => {
+    if (dlg.returnValue !== "save") return;
+    const data = { name: f.name.value.trim(), email: f.email.value.trim(), building: f.building.value, role: f.role.value, treasurer: f.treasurer.checked };
+    try {
+      if (m) {
+        if (m.uid === ctx.user.uid && data.role !== "admin" && !confirm("Remove your own admin access?")) return;
+        await updateDoc(doc(db, "members", m.uid), data);
+        if (data.name !== m.name) await updateDoc(doc(db, "roster", m.uid), { name: data.name });
+        toast("Saved");
+      } else {
+        await callFn("createMember", { ...data, password: f.password.value });
+        alert(`${data.name} has been added.\n\nTheir starting password is:\n\n${f.password.value}`);
+      }
+      await loadMembers();
+    } catch (err) { fail(err); }
+  };
+  openDialog(dlg);
+}
+
+/* ---------------- meetings ---------------- */
+let existing = [];
+const loadExisting = async () => { existing = (await getDocs(collection(db, "meetings"))).docs.map(d => d.data().date); };
+
+function firstMonday(y, m, useSecondIfHoliday) {
+  const d = new Date(y, m, 1);
+  while (d.getDay() !== 1) d.setDate(d.getDate() + 1);
+  const holiday = m === 8 /* Labor Day */ || (m === 0 && d.getDate() === 1) /* New Year's */ || (m === 6 && d.getDate() === 4);
+  if (holiday && useSecondIfHoliday) d.setDate(d.getDate() + 7);
+  return `${y}-${String(m + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+const cal = Object.fromEntries((await getDocs(collection(db, "calendar"))).docs.map(d => [d.id, d.data()]));
+const skipDefault = n => cal[n] ? !!cal[n].skip : (n === 7 || n === 8);
+document.getElementById("g-months").innerHTML = MONTHS.map((name, i) => `<label style="display:flex;gap:4px;align-items:center;margin:0;font-weight:400"><input type="checkbox" value="${i}" ${skipDefault(i + 1) ? "" : "checked"}>${name.slice(0, 3)}</label>`).join("");
+const today = todayISO();
+document.getElementById("g-year").value = Number(today.slice(0, 4)) + (Number(today.slice(5, 7)) >= 11 ? 1 : 0);
+
+let planned = [];
+document.getElementById("g-preview").onclick = async () => {
+  await loadExisting();
+  const y = Number(document.getElementById("g-year").value), hol = document.getElementById("g-holiday").checked;
+  const months = [...document.querySelectorAll("#g-months input:checked")].map(i => Number(i.value));
+  const have = new Set(existing.map(d => d.slice(0, 7)));
+  planned = months.map(m => firstMonday(y, m, hol)).filter(d => !have.has(d.slice(0, 7)));
+  const time = document.getElementById("g-time").value;
+  document.getElementById("g-out").innerHTML = planned.length
+    ? `Will create ${planned.length} meeting${planned.length > 1 ? "s" : ""}: ${planned.map(d => fmtDate(d, { weekday: "short", month: "short", day: "numeric" })).join(" · ")} at ${fmtTime(time)}` + (planned.some(d => d < today) ? `<br><span style="color:var(--danger)">Some of these dates are in the past. Untick those months if you don't want them.</span>` : "")
+    : "Every ticked month already has a meeting. Nothing to create.";
+  document.getElementById("g-create").classList.toggle("hidden", !planned.length);
+};
+document.getElementById("g-create").onclick = async () => {
+  try {
+    const time = document.getElementById("g-time").value, location = document.getElementById("g-loc").value.trim();
+    for (const date of planned) await addDoc(collection(db, "meetings"), { date, time, location, status: "scheduled", note: "", minuteTaker: null, backup: null });
+    toast(`Created ${planned.length} meetings`);
+    document.getElementById("g-out").innerHTML = `Done. <a href="schedule.html">View the schedule</a>.`;
+    document.getElementById("g-create").classList.add("hidden");
+  } catch (err) { fail(err); }
+};
+document.getElementById("s-add").onclick = async () => {
+  const date = document.getElementById("s-date").value; if (!date) return toast("Pick a date", true);
+  try {
+    await addDoc(collection(db, "meetings"), { date, time: document.getElementById("s-time").value, location: "", status: "scheduled", note: document.getElementById("s-note").value.trim(), minuteTaker: null, backup: null });
+    toast("Meeting added");
+  } catch (err) { fail(err); }
+};
+
+/* ---------------- settings ---------------- */
+const sref = doc(db, "settings", "site");
+const s = (await getDoc(sref)).data() || {};
+document.getElementById("r-days").value = (s.reminderDays || [7, 1]).join(", ");
+document.getElementById("r-ask").checked = s.askForVolunteer !== false;
+document.getElementById("r-loc").value = s.defaultLocation || "";
+document.getElementById("r-save").onclick = async () => {
+  const days = document.getElementById("r-days").value.split(/[ ,]+/).map(Number).filter(n => n > 0 && n < 60);
+  try {
+    await setDoc(sref, { reminderDays: days, askForVolunteer: document.getElementById("r-ask").checked, defaultLocation: document.getElementById("r-loc").value.trim() }, { merge: true });
+    toast("Saved");
+  } catch (err) { fail(err); }
+};
+
+/* ---------------- guest demo ---------------- */
+async function loadDemo() {
+  const on = (await getDoc(doc(db, "public", "demo"))).exists();
+  const st = document.getElementById("demo-state"), btn = document.getElementById("demo-toggle");
+  st.textContent = on ? "On" : "Off"; st.className = "chip " + (on ? "gold" : "grey");
+  btn.textContent = on ? "Turn off guest demo" : "Turn on guest demo";
+  btn.disabled = false;
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try { await callFn("setDemoAccess", { enabled: !on }); toast(on ? "Guest demo is off" : "Guest demo is on"); }
+    catch (err) { fail(err); }
+    await loadDemo();
+  };
+}
+loadDemo().catch(fail);
+
+loadMembers().catch(fail);
+</script>
+</body>
+</html>

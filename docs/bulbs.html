@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bulb Orders · Grounds Committee</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500;600&family=Jost:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<main>
+  <h1>Bulb orders</h1>
+  <p class="lede">Each building orders and pays for its own bulbs, then gets reimbursed. Post the order your building is planning so other buildings can join it and share shipping or bulk pricing. Then upload your receipt here for the treasurer.</p>
+
+  <div class="toolbar">
+    <h2 style="margin:0">Planned orders</h2>
+    <select id="season"></select>
+    <span class="spacer"></span>
+    <button class="btn" id="new-order">Post a planned order</button>
+  </div>
+  <div id="orders"><p class="empty">Loading…</p></div>
+
+  <h2 id="receipts-h">Receipts</h2>
+  <p class="small muted" style="margin-top:-6px" id="receipts-note"></p>
+  <details class="card cream">
+    <summary style="cursor:pointer;font-weight:600;color:var(--green)">Upload a receipt</summary>
+    <form id="receipt-form">
+      <div class="row">
+        <div><label>Building</label><select name="building" required></select></div>
+        <div><label>Supplier</label><input name="supplier" list="suppliers" required></div>
+      </div>
+      <div class="row">
+        <div><label>Amount ($)</label><input name="amount" type="number" step="0.01" min="0" required></div>
+        <div><label>Date purchased</label><input name="purchased" type="date" required></div>
+      </div>
+      <label>For which planned order (optional)</label><select name="orderId"></select>
+      <label>Receipt file (PDF or photo)</label><input name="file" type="file" accept=".pdf,image/*" required>
+      <label>Notes for the treasurer</label><input name="notes" placeholder="e.g. Includes Building 2's share: $84.50">
+      <div class="actions"><button class="btn">Upload receipt</button><span class="small muted" id="r-status"></span></div>
+    </form>
+  </details>
+  <div class="table-wrap" style="margin-top:14px">
+    <table class="data">
+      <thead><tr><th>Purchased</th><th>Building</th><th>Supplier</th><th>Amount</th><th>Submitted by</th><th>Status</th><th></th></tr></thead>
+      <tbody id="receipts"></tbody>
+    </table>
+  </div>
+
+  <h2>Where to buy bulbs</h2>
+  <div class="grid" id="suppliers-grid"></div>
+  <datalist id="suppliers"></datalist>
+</main>
+
+<dialog id="order-dlg">
+  <form method="dialog">
+    <h3 id="order-title">Planned order</h3>
+    <div class="row">
+      <div><label>Organizing building</label><select name="building" required></select></div>
+      <div><label>Supplier</label><input name="supplier" list="suppliers" required></div>
+    </div>
+    <div class="row">
+      <div><label>Ordering by (so others can join in time)</label><input name="orderBy" type="date"></div>
+      <div><label>Status</label><select name="status">
+        <option value="planning">Planning: others welcome to join</option>
+        <option value="closed">Closed to new buildings</option>
+        <option value="ordered">Ordered</option>
+        <option value="delivered">Delivered</option>
+      </select></div>
+    </div>
+    <label>Notes</label><textarea name="notes" placeholder="Shipping cost, minimum order, delivery address, how to split the cost…"></textarea>
+    <div class="actions">
+      <button class="btn" value="save">Save</button><button class="btn secondary" data-close>Cancel</button>
+      <span class="spacer"></span><button class="btn danger hidden" value="delete" id="order-del">Delete</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module">
+import { startPage, db, storage, esc, fmtDate, fmtStamp, todayISO, fail, toast, openDialog, BUILDINGS } from "./js/app.js";
+import { collection, getDocs, doc, addDoc, updateDoc, deleteDoc, query, where, orderBy, arrayUnion, serverTimestamp, setDoc } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { ref, uploadBytes, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js";
+
+const ctx = await startPage({ page: "bulbs.html" });
+const me = ctx.user.uid, myBuilding = ctx.member.building || "";
+const money = n => "$" + Number(n || 0).toFixed(2);
+
+const SUPPLIERS = [
+  { name: "Brent and Becky's", url: "https://brentandbeckysbulbs.com/", note: "Family grower in Virginia with a huge selection and good naturalizing daffodils." },
+  { name: "John Scheepers", url: "https://www.johnscheepers.com/", note: "Classic Dutch bulbs. Sister company of Van Engelen." },
+  { name: "Van Engelen", url: "https://www.vanengelen.com/", note: "Wholesale quantities (bags of 25–100+) at bulk prices, with a minimum order. Good for combining buildings." },
+  { name: "Colorblends", url: "https://www.colorblends.com/", note: "Wholesale, known for pre-designed tulip and daffodil blends." },
+  { name: "K. van Bourgondien", url: "https://www.dutchbulbs.com/", note: "Bulk and landscape packs." },
+  { name: "Longfield Gardens", url: "https://www.longfield-gardens.com/", note: "Retail packs and good planting guides." },
+  { name: "Old House Gardens", url: "https://oldhousegardens.com/", note: "Heirloom and historic varieties." },
+];
+document.getElementById("suppliers-grid").innerHTML = SUPPLIERS.map(s => `<a class="tile" href="${s.url}" target="_blank" rel="noopener"><h3>${esc(s.name)}</h3><p>${esc(s.note)}</p><span class="more">Visit site</span></a>`).join("");
+document.getElementById("suppliers").innerHTML = SUPPLIERS.map(s => `<option value="${esc(s.name)}">`).join("");
+const bOpts = sel => BUILDINGS.map(b => `<option ${b === sel ? "selected" : ""}>${b}</option>`).join("");
+
+/* ---------------- planned orders ---------------- */
+let orders = [];
+const thisSeason = todayISO().slice(0, 4);
+const STATUS = { planning: ["Open to join", "gold"], closed: ["Closed", "grey"], ordered: ["Ordered", ""], delivered: ["Delivered", "grey"] };
+
+async function loadOrders() {
+  const snap = await getDocs(collection(db, "bulbOrders"));
+  orders = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.orderBy || "9").localeCompare(b.orderBy || "9"));
+  const seasons = [...new Set([thisSeason, ...orders.map(o => o.season)])].sort().reverse();
+  const sel = document.getElementById("season"), cur = sel.value || thisSeason;
+  sel.innerHTML = seasons.map(s => `<option value="${s}" ${s === cur ? "selected" : ""}>Fall ${s}</option>`).join("");
+  renderOrders();
+  document.querySelector("#receipt-form [name=orderId]").innerHTML = `<option value="">—</option>` +
+    orders.filter(o => o.season === thisSeason).map(o => `<option value="${o.id}">${esc(o.supplier)} (organized by ${esc(o.building)})</option>`).join("");
+}
+
+function renderOrders() {
+  const season = document.getElementById("season").value;
+  const shown = orders.filter(o => o.season === season);
+  document.getElementById("orders").innerHTML = shown.length ? shown.map(o => {
+    const lines = o.lines || [];
+    const byB = {};
+    for (const l of lines) byB[l.building] = (byB[l.building] || 0) + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0);
+    const buildings = [...new Set([o.building, ...lines.map(l => l.building)])];
+    const [label, chip] = STATUS[o.status] || [o.status, "grey"];
+    const canJoin = o.status === "planning";
+    return `<article class="item" data-id="${o.id}">
+      <header>
+        <h3>${esc(o.supplier)}</h3><span class="chip ${chip}">${label}</span>
+        ${buildings.map(b => `<span class="chip grey">${esc(b)}</span>`).join(" ")}
+        <span class="spacer"></span><button class="linklike small" data-act="edit">edit</button>
+      </header>
+      <div class="meta">Organized by ${esc(o.building)} (${esc(ctx.nameOf(o.postedBy))})${o.orderBy ? ` · ordering by <strong>${fmtDate(o.orderBy, { month: "short", day: "numeric" })}</strong>` : ""}</div>
+      ${o.notes ? `<p style="margin:8px 0 0;white-space:pre-wrap" class="small">${esc(o.notes)}</p>` : ""}
+      ${lines.length ? `<div class="table-wrap" style="margin-top:10px"><table class="data"><thead><tr><th>Building</th><th>Variety</th><th>Qty</th><th>Unit price</th><th>Subtotal</th><th></th></tr></thead><tbody>
+        ${lines.map((l, i) => `<tr><td>${esc(l.building)}</td><td>${esc(l.variety)}${l.addedBy ? `<div class="small muted">${esc(ctx.nameOf(l.addedBy))}</div>` : ""}</td><td>${esc(l.qty)}</td><td>${l.unitPrice ? money(l.unitPrice) : ""}</td><td>${l.unitPrice ? money(l.qty * l.unitPrice) : ""}</td>
+          <td>${l.addedBy === me || o.postedBy === me || ctx.isAdmin ? `<button class="linklike small" data-act="rmline" data-i="${i}">remove</button>` : ""}</td></tr>`).join("")}
+        </tbody></table></div>
+        <p class="small" style="margin:6px 0 0">${Object.entries(byB).filter(([, v]) => v).map(([b, v]) => `${esc(b)}: <strong>${money(v)}</strong>`).join(" · ")}</p>` : `<p class="empty small">No bulbs listed yet.</p>`}
+      ${canJoin || o.postedBy === me ? `<details style="margin-top:10px"><summary class="small" style="cursor:pointer;color:var(--green)">${o.postedBy === me ? "Add bulbs" : "Join this order: add your building's bulbs"}</summary>
+        <div class="row" style="align-items:flex-end">
+          <div style="flex:1 1 130px"><label>Building</label><select name="l-building">${bOpts(myBuilding || o.building)}</select></div>
+          <div style="flex:3 1 220px"><label>Variety</label><input name="l-variety" placeholder="e.g. Narcissus 'Thalia'"></div>
+          <div style="flex:1 1 80px"><label>Qty</label><input name="l-qty" type="number" min="1"></div>
+          <div style="flex:1 1 100px"><label>Unit price</label><input name="l-price" type="number" step="0.01" min="0"></div>
+          <div style="flex:0 0 auto"><button class="btn" data-act="addline">Add</button></div>
+        </div></details>` : ""}
+      <div style="margin-top:10px">
+        ${(o.comments || []).map(c => `<div class="small" style="padding:4px 0;border-top:1px solid #f0ead8"><strong>${esc(ctx.nameOf(c.by))}</strong> <span class="muted">${fmtStamp(c.at)}</span><br>${esc(c.text)}</div>`).join("")}
+        <div class="row" style="align-items:flex-end;margin-top:4px"><div style="flex:4 1 240px"><input name="c-text" placeholder="Ask a question or leave a note for this order…"></div><div style="flex:0 0 auto"><button class="btn secondary small" data-act="comment">Post</button></div></div>
+      </div>
+    </article>`;
+  }).join("") : `<p class="empty">No orders posted for this season yet.</p>`;
+}
+
+document.getElementById("season").onchange = renderOrders;
+document.getElementById("new-order").onclick = () => editOrder(null);
+
+document.getElementById("orders").onclick = async e => {
+  const b = e.target.closest("[data-act]"); if (!b) return;
+  const card = b.closest("[data-id]"), o = orders.find(x => x.id === card.dataset.id);
+  const ref_ = doc(db, "bulbOrders", o.id);
+  try {
+    if (b.dataset.act === "edit") return editOrder(o);
+    if (b.dataset.act === "addline") {
+      const variety = card.querySelector("[name=l-variety]").value.trim(), qty = Number(card.querySelector("[name=l-qty]").value);
+      if (!variety || !qty) return toast("Enter a variety and quantity", true);
+      await updateDoc(ref_, { lines: arrayUnion({ building: card.querySelector("[name=l-building]").value, variety, qty, unitPrice: Number(card.querySelector("[name=l-price]").value) || null, addedBy: me, id: crypto.randomUUID() }) });
+    } else if (b.dataset.act === "rmline") {
+      const lines = [...o.lines]; lines.splice(Number(b.dataset.i), 1);
+      await updateDoc(ref_, { lines });
+    } else if (b.dataset.act === "comment") {
+      const text = card.querySelector("[name=c-text]").value.trim(); if (!text) return;
+      await updateDoc(ref_, { comments: arrayUnion({ text, by: me, at: new Date().toISOString() }) });
+    }
+    await loadOrders();
+  } catch (err) { fail(err); }
+};
+
+function editOrder(o) {
+  const dlg = document.getElementById("order-dlg"), f = dlg.querySelector("form");
+  document.getElementById("order-title").textContent = o ? "Edit order" : "Post a planned order";
+  document.getElementById("order-del").classList.toggle("hidden", !(o && (o.postedBy === me || ctx.isAdmin)));
+  f.building.innerHTML = bOpts(o?.building || myBuilding);
+  f.supplier.value = o?.supplier || ""; f.orderBy.value = o?.orderBy || ""; f.status.value = o?.status || "planning"; f.notes.value = o?.notes || "";
+  dlg.returnValue = "";
+  dlg.onclose = async () => {
+    try {
+      if (dlg.returnValue === "save") {
+        const data = { building: f.building.value, supplier: f.supplier.value.trim(), orderBy: f.orderBy.value || null, status: f.status.value, notes: f.notes.value.trim() };
+        if (o) await updateDoc(doc(db, "bulbOrders", o.id), data);
+        else await addDoc(collection(db, "bulbOrders"), { ...data, season: thisSeason, lines: [], comments: [], postedBy: me, createdAt: serverTimestamp() });
+        toast("Saved");
+      } else if (dlg.returnValue === "delete") {
+        if (!confirm("Delete this order and everything on it?")) return;
+        await deleteDoc(doc(db, "bulbOrders", o.id));
+      }
+      await loadOrders();
+    } catch (err) { fail(err); }
+  };
+  openDialog(dlg);
+}
+
+/* ---------------- receipts ---------------- */
+let receipts = [];
+document.getElementById("receipts-note").textContent = ctx.isTreasurer
+  ? "You can see every building's receipts. Mark them reimbursed as you pay them."
+  : "Only you, the treasurer, and the admin can see your receipts. The treasurer gets an email when you upload one.";
+const rf = document.getElementById("receipt-form");
+rf.building.innerHTML = bOpts(myBuilding);
+rf.purchased.value = todayISO();
+
+async function loadReceipts() {
+  const base = collection(db, "receipts");
+  const snap = await getDocs(ctx.isTreasurer ? query(base, orderBy("purchased", "desc")) : query(base, where("uploadedBy", "==", me)));
+  receipts = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => b.purchased.localeCompare(a.purchased));
+  document.getElementById("receipts").innerHTML = receipts.length ? receipts.map(r => `<tr>
+    <td>${fmtDate(r.purchased, { month: "short", day: "numeric", year: "numeric" })}</td>
+    <td>${esc(r.building)}</td>
+    <td><button class="linklike" data-open="${r.id}">${esc(r.supplier)}</button>${r.notes ? `<div class="small muted">${esc(r.notes)}</div>` : ""}</td>
+    <td>${money(r.amount)}</td>
+    <td>${esc(ctx.nameOf(r.uploadedBy))}</td>
+    <td>${r.reimbursed ? `<span class="chip">Reimbursed ${r.reimbursedOn ? fmtDate(r.reimbursedOn, { month: "short", day: "numeric" }) : ""}</span>` : `<span class="chip gold">Pending</span>`}</td>
+    <td>${ctx.isTreasurer ? `<button class="btn secondary small" data-reimb="${r.id}">${r.reimbursed ? "Undo" : "Mark reimbursed"}</button>` : ""}
+        ${(r.uploadedBy === me && !r.reimbursed) || ctx.isAdmin ? `<button class="btn danger small" data-rdel="${r.id}">Delete</button>` : ""}</td>
+  </tr>`).join("") : `<tr><td colspan="7" class="empty">No receipts yet.</td></tr>`;
+}
+
+rf.onsubmit = async e => {
+  e.preventDefault();
+  const file = rf.file.files[0], status = document.getElementById("r-status");
+  const btn = rf.querySelector("button"); btn.disabled = true; status.textContent = "Uploading…";
+  try {
+    const id = doc(collection(db, "receipts")).id;
+    const storagePath = `receipts/${me}/${id}-${file.name}`;
+    await uploadBytes(ref(storage, storagePath), file, { contentType: file.type || "application/octet-stream", customMetadata: { uploadedBy: me } });
+    await setDoc(doc(db, "receipts", id), {
+      building: rf.building.value, supplier: rf.supplier.value.trim(), amount: Number(rf.amount.value),
+      purchased: rf.purchased.value, orderId: rf.orderId.value || null, notes: rf.notes.value.trim(),
+      fileName: file.name, storagePath, uploadedBy: me, uploadedAt: serverTimestamp(), reimbursed: false,
+    });
+    rf.reset(); rf.building.innerHTML = bOpts(myBuilding); rf.purchased.value = todayISO();
+    toast("Receipt uploaded. The treasurer has been notified.");
+    await loadReceipts();
+  } catch (err) { fail(err); }
+  btn.disabled = false; status.textContent = "";
+};
+
+document.getElementById("receipts").onclick = async e => {
+  const o = e.target.closest("[data-open]"), rb = e.target.closest("[data-reimb]"), del = e.target.closest("[data-rdel]");
+  try {
+    if (o) {
+      const r = receipts.find(x => x.id === o.dataset.open);
+      window.open(await getDownloadURL(ref(storage, r.storagePath)), "_blank", "noopener");
+    } else if (rb) {
+      const r = receipts.find(x => x.id === rb.dataset.reimb);
+      await updateDoc(doc(db, "receipts", r.id), { reimbursed: !r.reimbursed, reimbursedOn: r.reimbursed ? null : todayISO(), reimbursedBy: r.reimbursed ? null : me });
+      await loadReceipts();
+    } else if (del) {
+      const r = receipts.find(x => x.id === del.dataset.rdel);
+      if (!confirm(`Delete the ${r.supplier} receipt?`)) return;
+      await deleteObject(ref(storage, r.storagePath)).catch(err => { if (err.code !== "storage/object-not-found") throw err; });
+      await deleteDoc(doc(db, "receipts", r.id));
+      await loadReceipts();
+    }
+  } catch (err) { fail(err); }
+};
+
+if (ctx.isDemo) {
+  document.getElementById("receipts-note").textContent = "Receipts are private to each building, the treasurer and the admin.";
+  document.getElementById("receipts").innerHTML = `<tr><td colspan="7" class="empty">Hidden in the guest view.</td></tr>`;
+  loadOrders().catch(fail);
+} else Promise.all([loadOrders(), loadReceipts()]).catch(fail);
+</script>
+</body>
+</html>

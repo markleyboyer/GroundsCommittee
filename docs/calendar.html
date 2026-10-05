@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Committee Year · Grounds Committee</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500;600&family=Jost:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<main>
+  <h1>The committee year</h1>
+  <p class="lede">What usually comes before the Grounds Committee in each month, so the decisions that need lead time don't catch anyone off guard. Each month also shows this year's meeting date.</p>
+  <div class="toolbar">
+    <select id="f-tag"><option value="">All topics</option></select>
+    <span class="spacer"></span>
+    <span class="small muted admin-only hidden">As admin, click “edit” on any month.</span>
+  </div>
+  <div class="months" id="months"><p class="empty">Loading…</p></div>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog">
+    <h3 id="dlg-title"></h3>
+    <label>Items, one per line, as <code>Title | Topic</code></label>
+    <textarea name="items" style="min-height:200px" placeholder="Final bulb orders | Bulbs"></textarea>
+    <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" name="skip"> Usually no meeting this month</label>
+    <div class="actions"><button class="btn" value="save">Save</button><button class="btn secondary" data-close>Cancel</button></div>
+  </form>
+</dialog>
+
+<script type="module">
+import { startPage, db, esc, fmtDate, fmtTime, todayISO, fail, toast, openDialog, MONTHS } from "./js/app.js";
+import { CALENDAR_DRAFT } from "./js/calendar-draft.js";
+import { collection, getDocs, doc, setDoc, query, where, orderBy } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+const ctx = await startPage({ page: "calendar.html" });
+if (ctx.isAdmin) document.querySelectorAll(".admin-only").forEach(e => e.classList.remove("hidden"));
+const TAG_CHIP = { Bulbs: "gold", Budget: "clay", Trees: "", Contractors: "grey", Events: "gold", Admin: "grey", Planning: "" };
+let cal = {}, meetingByMonth = {};
+const today = todayISO(), thisMonth = Number(today.slice(5, 7));
+
+async function load() {
+  const snap = await getDocs(collection(db, "calendar"));
+  cal = Object.fromEntries(snap.docs.map(d => [d.id, d.data()]));
+  if (!snap.size) cal = CALENDAR_DRAFT; // show the draft until an admin saves something
+  const y = today.slice(0, 4);
+  // meetings from this month forward through the next 11 months
+  const ms = await getDocs(query(collection(db, "meetings"), where("date", ">=", `${y}-${String(thisMonth).padStart(2, "0")}-01`), orderBy("date")));
+  meetingByMonth = {};
+  for (const d of ms.docs) { const m = d.data(), k = Number(m.date.slice(5, 7)); if (!meetingByMonth[k]) meetingByMonth[k] = m; }
+  const tags = [...new Set(Object.values(cal).flatMap(c => (c.items || []).map(i => i.tag)).filter(Boolean))].sort();
+  const sel = document.getElementById("f-tag"), cur = sel.value;
+  sel.innerHTML = `<option value="">All topics</option>` + tags.map(t => `<option ${t === cur ? "selected" : ""}>${esc(t)}</option>`).join("");
+  render();
+}
+
+function render() {
+  const tag = document.getElementById("f-tag").value;
+  // start the grid at the current month so "what's next" is at the top
+  const order = Array.from({ length: 12 }, (_, i) => ((thisMonth - 1 + i) % 12) + 1);
+  document.getElementById("months").innerHTML = order.map(n => {
+    const c = cal[n] || cal[String(n)] || { items: [] };
+    const items = (c.items || []).filter(i => !tag || i.tag === tag);
+    const mt = meetingByMonth[n];
+    const when = mt ? (mt.status === "cancelled" ? `<span class="chip grey">cancelled</span>` : `<span class="small muted">${fmtDate(mt.date, { weekday: "short", month: "short", day: "numeric" })} · ${fmtTime(mt.time)}</span>`)
+      : c.skip ? `<span class="chip grey">no meeting</span>` : "";
+    return `<section class="month ${n === thisMonth ? "now" : ""}">
+      <h3><span>${MONTHS[n - 1]}</span>${when}</h3>
+      ${items.length ? `<ul>${items.map(i => `<li>${esc(i.title)}${i.tag ? ` <span class="chip ${TAG_CHIP[i.tag] ?? "grey"}">${esc(i.tag)}</span>` : ""}</li>`).join("")}</ul>` : `<p class="empty small">Nothing listed${tag ? " for this topic" : ""}.</p>`}
+      ${ctx.isAdmin ? `<button class="linklike small" data-m="${n}">edit</button>` : ""}
+    </section>`;
+  }).join("");
+}
+
+document.getElementById("f-tag").onchange = render;
+document.getElementById("months").onclick = e => {
+  const b = e.target.closest("[data-m]"); if (!b) return;
+  const n = Number(b.dataset.m), c = cal[n] || cal[String(n)] || { items: [] };
+  const dlg = document.getElementById("dlg"), f = dlg.querySelector("form");
+  document.getElementById("dlg-title").textContent = MONTHS[n - 1];
+  f.items.value = (c.items || []).map(i => i.tag ? `${i.title} | ${i.tag}` : i.title).join("\n");
+  f.skip.checked = !!c.skip;
+  dlg.returnValue = "";
+  dlg.onclose = async () => {
+    if (dlg.returnValue !== "save") return;
+    const items = f.items.value.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
+      const [title, tag] = l.split("|").map(s => s.trim());
+      return tag ? { title, tag } : { title };
+    });
+    try {
+      // the first save writes the whole draft so other months don't disappear
+      if (cal === CALENDAR_DRAFT) for (const [k, v] of Object.entries(CALENDAR_DRAFT)) await setDoc(doc(db, "calendar", String(k)), v);
+      await setDoc(doc(db, "calendar", String(n)), { items, skip: f.skip.checked });
+      toast("Saved"); await load();
+    } catch (err) { fail(err); }
+  };
+  openDialog(dlg);
+};
+
+load().catch(fail);
+</script>
+</body>
+</html>

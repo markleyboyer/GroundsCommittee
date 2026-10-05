@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minutes Schedule · Grounds Committee</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500;600&family=Jost:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<main>
+  <h1>Minutes schedule</h1>
+  <p class="lede">Sign up to take minutes at an upcoming meeting. The minute-taker gets an email reminder a week before and the day before. After the meeting, upload the minutes on the <a href="minutes.html">Minutes Archive</a> page.</p>
+
+  <div class="toolbar">
+    <h2 style="margin:0">Upcoming meetings</h2>
+    <span class="spacer"></span>
+    <a class="btn secondary small admin-only hidden" href="admin.html#meetings">Add or generate meetings</a>
+  </div>
+  <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Date</th><th>Time</th><th>Minutes</th><th>Backup</th><th>Notes</th><th class="admin-only hidden"></th></tr></thead>
+      <tbody id="upcoming"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <h2>Who has taken minutes</h2>
+  <p class="small muted" style="margin-top:-6px">Counts meetings that have already happened. Members at the top are next in line.</p>
+  <div class="table-wrap" style="max-width:560px">
+    <table class="data">
+      <thead><tr><th>Member</th><th>Times</th><th>Most recent</th><th>Next signed up</th></tr></thead>
+      <tbody id="tally"></tbody>
+    </table>
+  </div>
+
+  <h2>Past meetings</h2>
+  <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Date</th><th>Minutes taken by</th><th>Notes</th><th class="admin-only hidden"></th></tr></thead>
+      <tbody id="past"></tbody>
+    </table>
+  </div>
+</main>
+
+<dialog id="edit">
+  <form method="dialog">
+    <h3>Edit meeting</h3>
+    <div class="row">
+      <div><label>Date</label><input name="date" type="date" required></div>
+      <div><label>Time</label><input name="time" type="time" required></div>
+    </div>
+    <label>Location</label><input name="location" placeholder="e.g. Community Room, Building 3">
+    <label>Status</label>
+    <select name="status"><option value="scheduled">Scheduled</option><option value="cancelled">Cancelled</option></select>
+    <div class="row">
+      <div><label>Minutes</label><select name="minuteTaker"></select></div>
+      <div><label>Backup</label><select name="backup"></select></div>
+    </div>
+    <label>Notes</label><input name="note" placeholder="e.g. Moved for Labor Day">
+    <div class="actions">
+      <button class="btn" value="save">Save</button>
+      <button class="btn secondary" data-close>Cancel</button>
+      <span class="spacer"></span>
+      <button class="btn danger" value="delete" type="submit">Delete meeting</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module">
+import { startPage, db, esc, fmtDate, fmtTime, todayISO, fail, toast, openDialog } from "./js/app.js";
+import { collection, getDocs, query, orderBy, doc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+const ctx = await startPage({ page: "schedule.html" });
+const me = ctx.user.uid;
+if (ctx.isAdmin) document.querySelectorAll(".admin-only").forEach(e => e.classList.remove("hidden"));
+
+let meetings = [];
+async function load() {
+  const snap = await getDocs(query(collection(db, "meetings"), orderBy("date")));
+  meetings = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  render();
+}
+
+function slot(m, field) {
+  const uid = m[field];
+  const label = field === "minuteTaker" ? "Sign up" : "Be backup";
+  if (m.status === "cancelled") return `<span class="muted">—</span>`;
+  if (!uid && ctx.isDemo) return `<span class="muted">open</span>`;
+  if (!uid) return `<button class="btn small ${field === "backup" ? "secondary" : ""}" data-act="take" data-field="${field}" data-id="${m.id}">${label}</button>`;
+  if (uid === me) return `<strong>You</strong> <button class="linklike small" data-act="drop" data-field="${field}" data-id="${m.id}">withdraw</button>`;
+  return esc(ctx.nameOf(uid));
+}
+
+function render() {
+  const today = todayISO();
+  const up = meetings.filter(m => m.date >= today);
+  const past = meetings.filter(m => m.date < today).reverse();
+  const nextId = up.find(m => m.status !== "cancelled")?.id;
+  const editBtn = m => ctx.isAdmin ? `<td class="keep"><button class="btn secondary small" data-act="edit" data-id="${m.id}">Edit</button></td>` : "";
+
+  document.getElementById("upcoming").innerHTML = up.length ? up.map(m => `
+    <tr class="${m.status === "cancelled" ? "cancelled" : ""} ${m.id === nextId ? "next" : ""}">
+      <td><strong>${fmtDate(m.date)}</strong>${m.id === nextId ? ` <span class="chip gold">Next</span>` : ""}</td>
+      <td>${fmtTime(m.time)}</td>
+      <td class="keep">${slot(m, "minuteTaker")}</td>
+      <td class="keep">${slot(m, "backup")}</td>
+      <td class="keep small">${m.status === "cancelled" ? `<span class="chip grey">Cancelled</span> ` : ""}${esc(m.note || "")}${m.location ? `<div class="muted">${esc(m.location)}</div>` : ""}</td>
+      ${editBtn(m)}
+    </tr>`).join("") : `<tr><td colspan="6" class="empty">No upcoming meetings. ${ctx.isAdmin ? `<a href="admin.html#meetings">Generate the year's meetings</a>.` : "The admin will add them soon."}</td></tr>`;
+
+  document.getElementById("past").innerHTML = past.length ? past.map(m => `
+    <tr class="past ${m.status === "cancelled" ? "cancelled" : ""}">
+      <td>${fmtDate(m.date)}</td>
+      <td class="keep">${m.status === "cancelled" ? `<span class="chip grey">Cancelled</span>` : esc(ctx.nameOf(m.minuteTaker)) || `<span class="muted">not recorded</span>`}</td>
+      <td class="keep small">${esc(m.note || "")}</td>
+      ${editBtn(m)}
+    </tr>`).join("") : `<tr><td colspan="4" class="empty">No past meetings recorded yet.</td></tr>`;
+
+  // fairness tally
+  const stats = Object.fromEntries(ctx.roster.list.filter(r => r.active !== false).map(r => [r.uid, { n: 0, last: null, next: null }]));
+  for (const m of meetings) {
+    if (m.status === "cancelled" || !m.minuteTaker || !stats[m.minuteTaker]) continue;
+    const s = stats[m.minuteTaker];
+    if (m.date < today) { s.n++; s.last = m.date; }
+    else if (!s.next) s.next = m.date;
+  }
+  const rows = Object.entries(stats).sort((a, b) => a[1].n - b[1].n || (a[1].last || "").localeCompare(b[1].last || "") || ctx.nameOf(a[0]).localeCompare(ctx.nameOf(b[0])));
+  document.getElementById("tally").innerHTML = rows.map(([uid, s]) => `
+    <tr><td>${esc(ctx.nameOf(uid))}${uid === me ? " <span class='chip'>you</span>" : ""}</td><td>${s.n}</td>
+    <td class="small">${s.last ? fmtDate(s.last, { month: "short", year: "numeric" }) : "<span class='muted'>—</span>"}</td>
+    <td class="small">${s.next ? fmtDate(s.next, { month: "short", day: "numeric" }) : ""}</td></tr>`).join("");
+}
+
+document.querySelector("main").addEventListener("click", async e => {
+  const b = e.target.closest("[data-act]"); if (!b) return;
+  const m = meetings.find(x => x.id === b.dataset.id);
+  const field = b.dataset.field;
+  try {
+    if (b.dataset.act === "take") {
+      const other = field === "minuteTaker" ? "backup" : "minuteTaker";
+      if (m[other] === me) { toast("You're already signed up for the other slot at this meeting.", true); return; }
+      b.disabled = true;
+      await updateDoc(doc(db, "meetings", m.id), { [field]: me });
+      toast(field === "minuteTaker" ? `You're taking minutes on ${fmtDate(m.date)}. Thank you!` : "You're the backup. Thank you!");
+    } else if (b.dataset.act === "drop") {
+      if (!confirm(`Withdraw from ${fmtDate(m.date)}?`)) return;
+      await updateDoc(doc(db, "meetings", m.id), { [field]: null });
+    } else if (b.dataset.act === "edit") {
+      return editMeeting(m);
+    }
+    await load();
+  } catch (err) { fail(err); await load(); }
+});
+
+function editMeeting(m) {
+  const dlg = document.getElementById("edit");
+  const f = dlg.querySelector("form");
+  const opts = sel => `<option value="">— nobody —</option>` + ctx.roster.list.map(r => `<option value="${r.uid}" ${r.uid === sel ? "selected" : ""}>${esc(r.name)}</option>`).join("");
+  f.minuteTaker.innerHTML = opts(m.minuteTaker);
+  f.backup.innerHTML = opts(m.backup);
+  f.date.value = m.date; f.time.value = m.time || "18:30"; f.location.value = m.location || "";
+  f.status.value = m.status || "scheduled"; f.note.value = m.note || "";
+  dlg.onclose = async () => {
+    try {
+      if (dlg.returnValue === "save") {
+        await updateDoc(doc(db, "meetings", m.id), {
+          date: f.date.value, time: f.time.value, location: f.location.value.trim(), status: f.status.value,
+          note: f.note.value.trim(), minuteTaker: f.minuteTaker.value || null, backup: f.backup.value || null,
+        });
+        toast("Meeting saved");
+      } else if (dlg.returnValue === "delete") {
+        if (!confirm(`Delete the ${fmtDate(m.date)} meeting? (Use "Cancelled" instead if you want to keep a record.)`)) return;
+        await deleteDoc(doc(db, "meetings", m.id));
+      }
+      await load();
+    } catch (err) { fail(err); }
+  };
+  dlg.returnValue = "";
+  openDialog(dlg);
+}
+
+load().catch(fail);
+</script>
+</body>
+</html>
