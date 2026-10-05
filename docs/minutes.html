@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minutes Archive · Grounds Committee</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500;600&family=Jost:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<main>
+  <h1>Minutes archive</h1>
+  <p class="lede">Every set of minutes in one place. If you took minutes, upload them here. You can upload several files at once, for example when adding older minutes, and give each one its meeting date.</p>
+
+  <details class="card cream" id="upload-box">
+    <summary style="cursor:pointer;font-weight:600;color:var(--green)">Upload minutes</summary>
+    <label for="files">Files (PDF, Word, text, or images)</label>
+    <input id="files" type="file" multiple accept=".pdf,.doc,.docx,.txt,.rtf,.odt,.md,image/*">
+    <div id="pending" class="stack" style="margin-top:12px"></div>
+    <div class="actions hidden" id="upload-actions">
+      <button class="btn" id="upload-btn">Upload</button>
+      <span id="upload-status" class="small muted"></span>
+    </div>
+  </details>
+
+  <div class="toolbar" style="margin-top:24px">
+    <input id="q" type="search" placeholder="Search file names and notes…">
+    <select id="year"><option value="">All years</option></select>
+  </div>
+  <div id="list"><p class="empty">Loading…</p></div>
+</main>
+<script type="module">
+import { startPage, db, storage, esc, fmtDate, fmtStamp, todayISO, fail, toast } from "./js/app.js";
+import { collection, getDocs, query, orderBy, doc, setDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { ref, uploadBytes, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js";
+
+const ctx = await startPage({ page: "minutes.html" });
+const me = ctx.user.uid;
+let docs = [], meetings = [];
+
+async function load() {
+  const [ms, mt] = await Promise.all([
+    getDocs(query(collection(db, "minutes"), orderBy("meetingDate", "desc"))),
+    getDocs(query(collection(db, "meetings"), orderBy("date", "desc"))),
+  ]);
+  docs = ms.docs.map(d => ({ id: d.id, ...d.data() }));
+  meetings = mt.docs.map(d => ({ id: d.id, ...d.data() }));
+  const years = [...new Set(docs.map(d => d.meetingDate.slice(0, 4)))];
+  const sel = document.getElementById("year"), cur = sel.value;
+  sel.innerHTML = `<option value="">All years</option>` + years.map(y => `<option ${y === cur ? "selected" : ""}>${y}</option>`).join("");
+  render();
+}
+
+function render() {
+  const q = document.getElementById("q").value.trim().toLowerCase();
+  const y = document.getElementById("year").value;
+  const shown = docs.filter(d => (!y || d.meetingDate.startsWith(y)) &&
+    (!q || `${d.fileName} ${d.notes || ""} ${ctx.nameOf(d.uploadedBy)}`.toLowerCase().includes(q)));
+  if (!shown.length) { document.getElementById("list").innerHTML = `<p class="empty">${docs.length ? "Nothing matches." : "No minutes uploaded yet."}</p>`; return; }
+  let html = "", year = "";
+  for (const d of shown) {
+    const yy = d.meetingDate.slice(0, 4);
+    if (yy !== year) { if (year) html += `</tbody></table></div>`; year = yy; html += `<h2>${yy}</h2><div class="table-wrap"><table class="data"><thead><tr><th>Meeting</th><th>File</th><th>Taken by</th><th>Notes</th><th></th></tr></thead><tbody>`; }
+    const taker = d.takenBy ? ctx.nameOf(d.takenBy) : "";
+    html += `<tr>
+      <td><strong>${fmtDate(d.meetingDate)}</strong></td>
+      <td><button class="linklike" data-open="${d.id}">${esc(d.fileName)}</button></td>
+      <td>${esc(taker)}<div class="small muted">uploaded ${fmtStamp(d.uploadedAt)}${d.uploadedBy !== d.takenBy ? " by " + esc(ctx.nameOf(d.uploadedBy)) : ""}</div></td>
+      <td class="small">${esc(d.notes || "")}</td>
+      <td>${d.uploadedBy === me || ctx.isAdmin ? `<button class="btn danger small" data-del="${d.id}">Delete</button>` : ""}</td>
+    </tr>`;
+  }
+  document.getElementById("list").innerHTML = html + `</tbody></table></div>`;
+}
+
+document.getElementById("q").oninput = render;
+document.getElementById("year").onchange = render;
+
+document.getElementById("list").onclick = async e => {
+  const o = e.target.closest("[data-open]"), del = e.target.closest("[data-del]");
+  try {
+    if (o) {
+      const d = docs.find(x => x.id === o.dataset.open);
+      window.open(await getDownloadURL(ref(storage, d.storagePath)), "_blank", "noopener");
+    } else if (del) {
+      const d = docs.find(x => x.id === del.dataset.del);
+      if (!confirm(`Delete "${d.fileName}"? This can't be undone.`)) return;
+      await deleteObject(ref(storage, d.storagePath)).catch(err => { if (err.code !== "storage/object-not-found") throw err; });
+      await deleteDoc(doc(db, "minutes", d.id));
+      toast("Deleted");
+      await load();
+    }
+  } catch (err) { fail(err); }
+};
+
+/* ---------- upload ---------- */
+// Guess a meeting date from names like "2024-03-04 minutes.pdf", "Minutes 3-4-24.docx" or "March 2024.pdf".
+function guessDate(name) {
+  let m = name.match(/(20\d\d)[-_. ](\d{1,2})[-_. ](\d{1,2})/);
+  if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+  m = name.match(/(\d{1,2})[-_. ](\d{1,2})[-_. ](\d{2,4})/);
+  if (m) { const y = m[3].length === 2 ? "20" + m[3] : m[3]; return `${y}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`; }
+  const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  m = name.toLowerCase().match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[ _-]*(20\d\d)/);
+  if (m) {
+    const ym = `${m[2]}-${String(months.indexOf(m[1]) + 1).padStart(2, "0")}`;
+    return meetings.find(x => x.date.startsWith(ym))?.date || `${ym}-01`;
+  }
+  // default: most recent meeting that has happened
+  return meetings.find(x => x.date <= todayISO() && x.status !== "cancelled")?.date || todayISO();
+}
+
+let pending = [];
+document.getElementById("files").onchange = e => {
+  pending = [...e.target.files].map(f => ({ file: f, date: guessDate(f.name) }));
+  const opts = ctx.roster.list.map(r => `<option value="${r.uid}">${esc(r.name)}</option>`).join("");
+  document.getElementById("pending").innerHTML = pending.map((p, i) => `
+    <div class="card" data-i="${i}">
+      <strong class="small">${esc(p.file.name)}</strong>
+      <div class="row">
+        <div><label>Meeting date</label><input type="date" name="date" value="${p.date}" required></div>
+        <div><label>Minutes taken by</label><select name="takenBy"><option value="">Unknown</option>${opts}</select></div>
+      </div>
+      <label>Notes (optional): the main topics, so people can search for them</label>
+      <input name="notes" placeholder="e.g. Bulb order, Building 4 drainage, fall cleanup contract">
+    </div>`).join("");
+  document.querySelectorAll("#pending [data-i]").forEach(card => {
+    const meeting = meetings.find(m => m.date === card.querySelector("[name=date]").value);
+    card.querySelector("[name=takenBy]").value = meeting?.minuteTaker || (pending.length === 1 ? me : "");
+  });
+  document.getElementById("upload-actions").classList.toggle("hidden", !pending.length);
+};
+
+document.getElementById("upload-btn").onclick = async () => {
+  const btn = document.getElementById("upload-btn"), status = document.getElementById("upload-status");
+  btn.disabled = true;
+  try {
+    const cards = [...document.querySelectorAll("#pending [data-i]")];
+    for (const [n, card] of cards.entries()) {
+      const p = pending[card.dataset.i];
+      const date = card.querySelector("[name=date]").value;
+      if (!date) throw new Error(`Please give ${p.file.name} a meeting date.`);
+      status.textContent = `Uploading ${n + 1} of ${cards.length}…`;
+      const id = doc(collection(db, "minutes")).id;
+      const storagePath = `minutes/${id}/${p.file.name}`;
+      await uploadBytes(ref(storage, storagePath), p.file, { contentType: p.file.type || "application/octet-stream", customMetadata: { uploadedBy: me } });
+      await setDoc(doc(db, "minutes", id), {
+        meetingDate: date, fileName: p.file.name, storagePath, contentType: p.file.type || "",
+        size: p.file.size, notes: card.querySelector("[name=notes]").value.trim(),
+        takenBy: card.querySelector("[name=takenBy]").value || null,
+        uploadedBy: me, uploadedAt: serverTimestamp(),
+      });
+    }
+    toast(`Uploaded ${cards.length} file${cards.length > 1 ? "s" : ""}. Thank you!`);
+    pending = [];
+    document.getElementById("files").value = "";
+    document.getElementById("pending").innerHTML = "";
+    document.getElementById("upload-actions").classList.add("hidden");
+    status.textContent = "";
+    await load();
+  } catch (err) { fail(err); status.textContent = ""; }
+  btn.disabled = false;
+};
+
+if (location.hash === "#upload") document.getElementById("upload-box").open = true;
+load().catch(fail);
+</script>
+</body>
+</html>

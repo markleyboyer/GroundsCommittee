@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ongoing Issues · Grounds Committee</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500;600&family=Jost:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<main>
+  <h1>Ongoing issues</h1>
+  <p class="lede">Items the committee keeps coming back to, from one meeting to the next. Add an update when something changes, ideally with the date of the meeting where it came up.</p>
+
+  <div class="stat-row" id="stats"></div>
+
+  <div class="toolbar">
+    <input id="q" type="search" placeholder="Search issues…">
+    <select id="f-status">
+      <option value="active">Open, in progress, or waiting</option>
+      <option value="">All</option>
+      <option value="open">Open</option>
+      <option value="in progress">In progress</option>
+      <option value="waiting">Waiting on someone</option>
+      <option value="resolved">Resolved</option>
+    </select>
+    <select id="f-area"><option value="">All areas</option></select>
+    <span class="spacer"></span>
+    <button class="btn" id="new">New issue</button>
+  </div>
+  <div id="list"><p class="empty">Loading…</p></div>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog">
+    <h3 id="dlg-title">New issue</h3>
+    <label>Title</label><input name="title" required placeholder="e.g. Drainage by Building 4 entrance">
+    <label>Description</label><textarea name="description" placeholder="What's the problem and what has been tried?"></textarea>
+    <div class="row">
+      <div><label>Area</label><input name="area" list="areas" placeholder="Building 1, Trees, Lawn…"></div>
+      <div><label>Status</label><select name="status"><option value="open">Open</option><option value="in progress">In progress</option><option value="waiting">Waiting on someone</option><option value="resolved">Resolved</option></select></div>
+    </div>
+    <div class="row">
+      <div><label>Committee lead</label><select name="owner"></select></div>
+      <div><label>Waiting on / contact</label><input name="contact" placeholder="e.g. Management office, arborist"></div>
+    </div>
+    <label>First raised</label><input name="firstRaised" type="date">
+    <div class="actions">
+      <button class="btn" value="save">Save</button>
+      <button class="btn secondary" data-close>Cancel</button>
+      <span class="spacer"></span>
+      <button class="btn danger hidden" value="delete" id="dlg-del">Delete issue</button>
+    </div>
+  </form>
+</dialog>
+<datalist id="areas"></datalist>
+
+<script type="module">
+import { startPage, db, esc, fmtDate, todayISO, fail, toast, openDialog, BUILDINGS } from "./js/app.js";
+import { collection, getDocs, doc, addDoc, updateDoc, deleteDoc, arrayUnion, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+const ctx = await startPage({ page: "issues.html" });
+const me = ctx.user.uid;
+const STATUS_CHIP = { "open": "gold", "in progress": "", "waiting": "clay", "resolved": "grey" };
+const DEFAULT_AREAS = ["Grounds-wide", ...BUILDINGS, "Trees", "Lawns", "Plantings & beds", "Paths & lighting", "Playground", "Budget", "Contractors"];
+let issues = [];
+
+async function load() {
+  const snap = await getDocs(collection(db, "issues"));
+  issues = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => (a.status === "resolved") - (b.status === "resolved") || (b.lastUpdate || "").localeCompare(a.lastUpdate || ""));
+  const areas = [...new Set([...DEFAULT_AREAS, ...issues.map(i => i.area).filter(Boolean)])];
+  document.getElementById("areas").innerHTML = areas.map(a => `<option value="${esc(a)}">`).join("");
+  const fa = document.getElementById("f-area"), cur = fa.value;
+  fa.innerHTML = `<option value="">All areas</option>` + [...new Set(issues.map(i => i.area).filter(Boolean))].sort().map(a => `<option ${a === cur ? "selected" : ""}>${esc(a)}</option>`).join("");
+  render();
+}
+
+function render() {
+  const count = s => issues.filter(i => i.status === s).length;
+  const year = todayISO().slice(0, 4);
+  document.getElementById("stats").innerHTML = [
+    [count("open"), "Open"], [count("in progress"), "In progress"], [count("waiting"), "Waiting"],
+    [issues.filter(i => i.status === "resolved" && (i.resolvedOn || "").startsWith(year)).length, `Resolved in ${year}`],
+  ].map(([n, l]) => `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
+
+  const q = document.getElementById("q").value.trim().toLowerCase();
+  const st = document.getElementById("f-status").value, ar = document.getElementById("f-area").value;
+  const shown = issues.filter(i =>
+    (st === "" || (st === "active" ? i.status !== "resolved" : i.status === st)) &&
+    (!ar || i.area === ar) &&
+    (!q || JSON.stringify([i.title, i.description, i.area, i.contact, (i.updates || []).map(u => u.text)]).toLowerCase().includes(q)));
+
+  document.getElementById("list").innerHTML = shown.length ? shown.map(i => `
+    <article class="item" data-id="${i.id}">
+      <header>
+        <h3>${esc(i.title)}</h3>
+        <span class="chip ${STATUS_CHIP[i.status] ?? ""}">${esc(i.status)}</span>
+        ${i.area ? `<span class="chip grey">${esc(i.area)}</span>` : ""}
+        <span class="spacer"></span>
+        <button class="linklike small" data-act="edit">edit</button>
+      </header>
+      <div class="meta">${i.firstRaised ? `First raised ${fmtDate(i.firstRaised, { month: "short", year: "numeric" })}` : ""}${i.owner ? ` · Lead: ${esc(ctx.nameOf(i.owner))}` : ""}${i.contact ? ` · Waiting on: ${esc(i.contact)}` : ""}</div>
+      ${i.description ? `<p style="margin:8px 0 0;white-space:pre-wrap">${esc(i.description)}</p>` : ""}
+      ${(i.updates || []).length ? `<ul class="updates">${[...i.updates].reverse().map(u => `<li>${esc(u.text)}<span class="meta">${fmtDate(u.date, { month: "short", day: "numeric", year: "numeric" })} · ${esc(ctx.nameOf(u.by))}</span></li>`).join("")}</ul>` : ""}
+      <details style="margin-top:10px"><summary class="small" style="cursor:pointer;color:var(--green)">Add an update</summary>
+        <div class="row" style="align-items:flex-end">
+          <div style="flex:3 1 260px"><label>Update</label><input name="u-text" placeholder="What happened?"></div>
+          <div style="flex:1 1 140px"><label>Date</label><input name="u-date" type="date" value="${todayISO()}"></div>
+          <div style="flex:1 1 140px"><label>Status</label><select name="u-status">${["open", "in progress", "waiting", "resolved"].map(s => `<option ${s === i.status ? "selected" : ""}>${s}</option>`).join("")}</select></div>
+          <div style="flex:0 0 auto"><button class="btn" data-act="update">Add</button></div>
+        </div>
+      </details>
+    </article>`).join("") : `<p class="empty">${issues.length ? "No issues match these filters." : "No issues yet. Click “New issue” to add the first one."}</p>`;
+}
+
+["q", "f-status", "f-area"].forEach(id => document.getElementById(id).addEventListener("input", render));
+
+document.getElementById("list").onclick = async e => {
+  const b = e.target.closest("[data-act]"); if (!b) return;
+  const card = b.closest("[data-id]"), issue = issues.find(i => i.id === card.dataset.id);
+  if (b.dataset.act === "edit") return edit(issue);
+  const text = card.querySelector("[name=u-text]").value.trim();
+  const status = card.querySelector("[name=u-status]").value;
+  const date = card.querySelector("[name=u-date]").value || todayISO();
+  if (!text && status === issue.status) return;
+  try {
+    const patch = { status, lastUpdate: date, updatedAt: serverTimestamp() };
+    if (text) patch.updates = arrayUnion({ date, text, by: me });
+    if (status === "resolved" && issue.status !== "resolved") patch.resolvedOn = date;
+    await updateDoc(doc(db, "issues", issue.id), patch);
+    toast("Update added");
+    await load();
+  } catch (err) { fail(err); }
+};
+
+document.getElementById("new").onclick = () => edit(null);
+
+function edit(issue) {
+  const dlg = document.getElementById("dlg"), f = dlg.querySelector("form");
+  document.getElementById("dlg-title").textContent = issue ? "Edit issue" : "New issue";
+  document.getElementById("dlg-del").classList.toggle("hidden", !(issue && (issue.createdBy === me || ctx.isAdmin)));
+  f.owner.innerHTML = `<option value="">—</option>` + ctx.roster.list.map(r => `<option value="${r.uid}">${esc(r.name)}</option>`).join("");
+  f.title.value = issue?.title || ""; f.description.value = issue?.description || ""; f.area.value = issue?.area || "";
+  f.status.value = issue?.status || "open"; f.owner.value = issue?.owner || ""; f.contact.value = issue?.contact || "";
+  f.firstRaised.value = issue?.firstRaised || todayISO();
+  dlg.returnValue = "";
+  dlg.onclose = async () => {
+    try {
+      if (dlg.returnValue === "save") {
+        const data = {
+          title: f.title.value.trim(), description: f.description.value.trim(), area: f.area.value.trim(),
+          status: f.status.value, owner: f.owner.value || null, contact: f.contact.value.trim(),
+          firstRaised: f.firstRaised.value || null, updatedAt: serverTimestamp(),
+        };
+        if (data.status === "resolved" && issue?.status !== "resolved") data.resolvedOn = todayISO();
+        if (issue) await updateDoc(doc(db, "issues", issue.id), data);
+        else await addDoc(collection(db, "issues"), { ...data, updates: [], createdBy: me, createdAt: serverTimestamp(), lastUpdate: todayISO() });
+        toast("Saved");
+      } else if (dlg.returnValue === "delete") {
+        if (!confirm(`Delete "${issue.title}" and all its updates? Marking it resolved keeps the history.`)) return;
+        await deleteDoc(doc(db, "issues", issue.id));
+      }
+      await load();
+    } catch (err) { fail(err); }
+  };
+  openDialog(dlg);
+}
+
+load().catch(fail);
+</script>
+</body>
+</html>

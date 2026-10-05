@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log In · Grounds Committee</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500;600&family=Jost:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<main>
+  <h1>Committee log in</h1>
+  <p class="lede">Choose your name, then enter your password.</p>
+
+  <div id="names" class="name-grid"><p class="empty">Loading members…</p></div>
+
+  <form id="pwform" class="card hidden" style="max-width:420px;margin-top:20px">
+    <h3 id="who"></h3>
+    <label for="pw">Password</label>
+    <input id="pw" type="password" autocomplete="current-password" required>
+    <div class="actions">
+      <button class="btn" type="submit">Log in</button>
+      <span id="err" class="small" style="color:var(--danger)"></span>
+    </div>
+    <p class="small muted">Forgot your password? Ask the committee admin to reset it for you.</p>
+  </form>
+</main>
+<script type="module">
+import { startPage, db, auth, esc, fail } from "./js/app.js";
+import { collection, getDocs, query, orderBy } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { signInWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+
+const next = new URLSearchParams(location.search).get("next") || "index.html";
+const ctx = await startPage({ page: "login.html", requireAuth: false });
+if (ctx.member) location.href = next;
+
+let chosen = null;
+try {
+  const snap = await getDocs(query(collection(db, "roster"), orderBy("name")));
+  const people = snap.docs.map(d => ({ uid: d.id, ...d.data() })).filter(p => p.active !== false);
+  const box = document.getElementById("names");
+  box.innerHTML = people.length
+    ? people.map(p => `<button class="name-btn" type="button" data-uid="${p.uid}">${esc(p.name)}</button>`).join("")
+    : `<p class="empty">No members yet — the admin needs to run the setup script.</p>`;
+  box.onclick = e => {
+    const b = e.target.closest(".name-btn"); if (!b) return;
+    box.querySelectorAll(".name-btn").forEach(x => x.classList.toggle("selected", x === b));
+    chosen = people.find(p => p.uid === b.dataset.uid);
+    document.getElementById("who").textContent = chosen.name;
+    document.getElementById("pwform").classList.remove("hidden");
+    document.getElementById("err").textContent = "";
+    document.getElementById("pw").focus();
+  };
+} catch (e) { fail(e); }
+
+document.getElementById("pwform").onsubmit = async e => {
+  e.preventDefault();
+  const err = document.getElementById("err");
+  err.textContent = "";
+  try {
+    await signInWithEmailAndPassword(auth, chosen.loginEmail, document.getElementById("pw").value);
+    location.href = next;
+  } catch (ex) {
+    err.textContent = /invalid|wrong|credential/i.test(ex.code || "") ? "That password didn't match." : (ex.message || "Couldn't log in.");
+  }
+};
+</script>
+</body>
+</html>

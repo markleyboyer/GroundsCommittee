@@ -1,0 +1,90 @@
+rules_version = '2';
+
+// Who can do what:
+//   anyone           – read the roster (names only) so the login page can list them
+//   members          – read everything except other people's receipts; sign themselves up for minutes;
+//                      upload minutes; add/edit issues; post and join bulb orders; upload receipts
+//   treasurer        – additionally read every receipt and mark them reimbursed
+//   admin            – everything, incl. members, meetings, the committee-year calendar and settings
+// Member accounts are created by Cloud Functions (functions/index.js), never from the browser.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function memberPath() { return /databases/$(database)/documents/members/$(request.auth.uid); }
+    function me() { return get(memberPath()).data; }
+    function isMember() { return signedIn() && exists(memberPath()) && me().get('active', true) != false; }
+    function isAdmin() { return isMember() && me().role == 'admin'; }
+    function isTreasurer() { return isMember() && (me().role == 'admin' || me().get('treasurer', false) == true); }
+    function changesOnly(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function isMine(field) { return resource.data.get(field, null) == request.auth.uid; }
+
+    // A sign-up slot may be claimed when empty, or released by the person holding it.
+    function slotOk(f) {
+      let before = resource.data.get(f, null);
+      let after = request.resource.data.get(f, null);
+      return after == before
+        || (before == null && after == request.auth.uid)
+        || (before == request.auth.uid && after == null);
+    }
+
+    match /roster/{uid} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /members/{uid} {
+      allow read: if isMember();
+      allow update: if isAdmin()
+        || (request.auth.uid == uid && isMember() && changesOnly(['email', 'building']));
+      allow create, delete: if isAdmin();
+    }
+
+    match /meetings/{id} {
+      allow read: if isMember();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+        || (isMember() && changesOnly(['minuteTaker', 'backup']) && slotOk('minuteTaker') && slotOk('backup'));
+    }
+
+    match /minutes/{id} {
+      allow read: if isMember();
+      allow create: if isMember() && request.resource.data.uploadedBy == request.auth.uid;
+      allow update, delete: if isAdmin() || (isMember() && isMine('uploadedBy'));
+    }
+
+    match /issues/{id} {
+      allow read, create: if isMember();
+      allow update: if isMember() && request.resource.data.get('createdBy', null) == resource.data.get('createdBy', null);
+      allow delete: if isAdmin() || (isMember() && isMine('createdBy'));
+    }
+
+    match /calendar/{month} {
+      allow read: if isMember();
+      allow write: if isAdmin();
+    }
+
+    match /settings/{name} {
+      allow read: if isMember();
+      allow write: if isAdmin();
+    }
+
+    // Any member can add their building's lines or a comment to an order; only the poster/admin deletes it.
+    match /bulbOrders/{id} {
+      allow read: if isMember();
+      allow create: if isMember() && request.resource.data.postedBy == request.auth.uid;
+      allow update: if isMember() && request.resource.data.postedBy == resource.data.postedBy;
+      allow delete: if isAdmin() || (isMember() && isMine('postedBy'));
+    }
+
+    match /receipts/{id} {
+      allow read: if isTreasurer() || (isMember() && isMine('uploadedBy'));
+      allow create: if isMember()
+        && request.resource.data.uploadedBy == request.auth.uid
+        && request.resource.data.reimbursed == false;
+      allow update: if isTreasurer()
+        || (isMember() && isMine('uploadedBy') && resource.data.reimbursed == false
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['reimbursed', 'reimbursedOn', 'reimbursedBy', 'uploadedBy']));
+      allow delete: if isAdmin() || (isMember() && isMine('uploadedBy') && resource.data.reimbursed == false);
+    }
+  }
+}
