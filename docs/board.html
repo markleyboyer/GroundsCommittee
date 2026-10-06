@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bulletin Board · Grounds Committee</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500;600&family=Jost:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<main>
+  <h1>Bulletin board</h1>
+  <p class="lede">Share links, photos and notes the committee should see. Click a subject to read the post and reply.</p>
+
+  <div class="toolbar">
+    <input id="q" type="search" placeholder="Search the board…">
+    <select id="f-tag"><option value="">All topics</option></select>
+    <span class="spacer"></span>
+    <button class="btn" id="new">New post</button>
+  </div>
+  <div id="list"><p class="empty">Loading…</p></div>
+</main>
+
+<dialog id="dlg" style="width:min(640px,calc(100vw - 32px))">
+  <form method="dialog">
+    <h3 id="dlg-title">New post</h3>
+    <label>Subject</label><input name="subject" required maxlength="200" placeholder="e.g. Sapsucker holes on the Atlas cedar by B2">
+    <label>Message</label><textarea name="body" style="min-height:140px" placeholder="What should the committee know?"></textarea>
+    <label>Links (one per line)</label><textarea name="links" style="min-height:60px" placeholder="https://…"></textarea>
+    <label>Topics</label>
+    <div id="tag-boxes" style="display:flex;flex-wrap:wrap;gap:4px 14px"></div>
+    <input name="otherTag" placeholder="Another topic (optional)" style="margin-top:6px">
+    <label>Photos and files (photos, PDFs; up to 20 MB each)</label>
+    <div id="existing" class="small"></div>
+    <input name="files" type="file" multiple accept="image/*,.pdf">
+    <div class="actions">
+      <button class="btn" value="save">Post</button>
+      <button class="btn secondary" data-close>Cancel</button>
+      <span class="small muted" id="dlg-status"></span>
+    </div>
+  </form>
+</dialog>
+
+<script type="module">
+import { startPage, db, storage, esc, fmtStamp, fail, toast, openDialog } from "./js/app.js";
+import { collection, getDocs, doc, setDoc, addDoc, updateDoc, deleteDoc, query, orderBy, serverTimestamp, increment } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { ref, uploadBytes, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js";
+
+const ctx = await startPage({ page: "board.html" });
+const me = ctx.user.uid;
+const TAGS = ["Trees", "Plantings", "Bulbs", "Lawns", "Wildlife", "Vegetable garden", "Ideas", "News", "Events"];
+let posts = [];
+
+if (ctx.isDemo) {
+  // The board is for committee members only; the guest demo just sees a note.
+  document.querySelector(".toolbar").classList.add("hidden");
+  document.getElementById("list").innerHTML = `<p class="empty">The bulletin board is for committee members only.</p>`;
+  throw new Error("guest view");
+}
+
+/* ---------- helpers ---------- */
+const urls = {};
+const urlFor = path => urls[path] ||= getDownloadURL(ref(storage, path));
+const isImage = a => (a.type || "").startsWith("image/");
+// Escape, then turn bare http(s) links into clickable ones.
+const linkify = text => esc(text).replace(/https?:\/\/[^\s<]+[^\s<.,;:!?)"']/g, u => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
+const cleanLinks = text => text.split(/\s+/).map(s => s.trim()).filter(Boolean).filter(s => {
+  try { return ["http:", "https:"].includes(new URL(s).protocol); } catch { return false; }
+});
+const when = p => p.lastActivity || p.createdAt;
+
+/** A small JPEG preview for list thumbnails (null if the browser can't decode the image). */
+async function makeThumb(file) {
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 320 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+    return await new Promise(r => c.toBlob(r, "image/jpeg", 0.8));
+  } catch { return null; }
+}
+
+/* ---------- list ---------- */
+async function load() {
+  const snap = await getDocs(query(collection(db, "posts"), orderBy("createdAt", "desc")));
+  posts = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => (when(b)?.toMillis?.() || Date.now()) - (when(a)?.toMillis?.() || Date.now()));
+  const tags = [...new Set([...TAGS, ...posts.flatMap(p => p.tags || [])])].sort();
+  const sel = document.getElementById("f-tag"), cur = sel.value;
+  sel.innerHTML = `<option value="">All topics</option>` + tags.map(t => `<option ${t === cur ? "selected" : ""}>${esc(t)}</option>`).join("");
+  render();
+}
+
+function render() {
+  const q = document.getElementById("q").value.trim().toLowerCase(), tag = document.getElementById("f-tag").value;
+  const open = new Set([...document.querySelectorAll("#list details[open]")].map(d => d.dataset.id));
+  const shown = posts.filter(p => (!tag || (p.tags || []).includes(tag)) &&
+    (!q || [p.subject, p.body, ...(p.links || []), ...(p.tags || []), ctx.nameOf(p.authorId), ...(p.attachments || []).map(a => a.name)].join(" ").toLowerCase().includes(q)));
+  document.getElementById("list").innerHTML = shown.length ? shown.map(p => {
+    const firstImg = (p.attachments || []).find(a => isImage(a) && a.thumbPath);
+    const files = (p.attachments || []).length;
+    return `<details class="item post" data-id="${p.id}" ${open.has(p.id) ? "open" : ""}>
+      <summary class="post-row">
+        <div class="post-thumb">${firstImg ? `<img data-src="${esc(firstImg.thumbPath)}" alt="">` : (p.links || []).length ? "🔗" : files ? "📎" : ""}</div>
+        <div class="post-main">
+          <div class="post-subject">${esc(p.subject)}</div>
+          <div class="meta">${esc(ctx.nameOf(p.authorId))} · ${fmtStamp(p.createdAt)}${(p.tags || []).map(t => ` <span class="chip grey">${esc(t)}</span>`).join("")}</div>
+        </div>
+        <div class="post-count small muted">${p.replyCount ? `${p.replyCount} repl${p.replyCount === 1 ? "y" : "ies"}` : ""}${files ? `<div>${files} file${files > 1 ? "s" : ""}</div>` : ""}</div>
+      </summary>
+      <div class="post-body"></div>
+    </details>`;
+  }).join("") : `<p class="empty">${posts.length ? "Nothing matches." : "Nothing on the board yet. Click “New post” to share the first link or photo."}</p>`;
+  document.querySelectorAll("#list img[data-src]").forEach(img => urlFor(img.dataset.src).then(u => img.src = u).catch(() => {}));
+  document.querySelectorAll("#list details[open]").forEach(d => fillBody(d));
+}
+
+async function fillBody(det) {
+  const p = posts.find(x => x.id === det.dataset.id), box = det.querySelector(".post-body");
+  const mine = p.authorId === me;
+  box.innerHTML = `
+    ${p.body ? `<p style="white-space:pre-wrap;margin:10px 0">${linkify(p.body)}</p>` : ""}
+    ${(p.links || []).length ? `<ul class="post-links">${p.links.map(l => `<li><a href="${esc(l)}" target="_blank" rel="noopener">${esc(l)}</a></li>`).join("")}</ul>` : ""}
+    ${(p.attachments || []).length ? `<div class="post-gallery">${p.attachments.map((a, i) => isImage(a)
+      ? `<a data-file="${i}" href="#" title="${esc(a.name)}"><img data-full="${esc(a.thumbPath || a.path)}" alt="${esc(a.name)}"></a>`
+      : `<a data-file="${i}" href="#" class="post-file">📄 ${esc(a.name)}</a>`).join("")}</div>` : ""}
+    ${mine || ctx.isAdmin ? `<div class="actions" style="margin-top:6px">${mine ? `<button class="btn secondary small" data-act="edit">Edit</button>` : ""}<button class="btn danger small" data-act="delete">Delete post</button></div>` : ""}
+    <ul class="updates replies"><li class="muted small">Loading replies…</li></ul>
+    <div class="row" style="align-items:flex-end;margin-top:6px">
+      <div style="flex:4 1 240px"><input name="reply" placeholder="Write a reply…"></div>
+      <div style="flex:0 0 auto"><button class="btn small" data-act="reply">Reply</button></div>
+    </div>`;
+  box.querySelectorAll("img[data-full]").forEach(img => urlFor(img.dataset.full).then(u => img.src = u).catch(() => {}));
+  const rs = await getDocs(query(collection(db, "posts", p.id, "replies"), orderBy("createdAt")));
+  box.querySelector(".replies").innerHTML = rs.docs.length ? rs.docs.map(d => {
+    const r = d.data();
+    return `<li data-rid="${d.id}">${linkify(r.text)}<span class="meta">${esc(ctx.nameOf(r.authorId))} · ${fmtStamp(r.createdAt)}${r.authorId === me || ctx.isAdmin ? ` · <button class="linklike small" data-act="del-reply">delete</button>` : ""}</span></li>`;
+  }).join("") : `<li class="muted small">No replies yet.</li>`;
+}
+
+const list = document.getElementById("list");
+list.addEventListener("toggle", e => { if (e.target.open) fillBody(e.target).catch(fail); }, true);
+document.getElementById("q").oninput = render;
+document.getElementById("f-tag").onchange = render;
+document.getElementById("new").onclick = () => editPost(null);
+
+list.addEventListener("click", async e => {
+  const f = e.target.closest("[data-file]"), b = e.target.closest("[data-act]");
+  if (!f && !b) return;
+  e.preventDefault();
+  const det = e.target.closest("details"), p = posts.find(x => x.id === det.dataset.id);
+  try {
+    if (f) return window.open(await urlFor(p.attachments[f.dataset.file].path), "_blank", "noopener");
+    const act = b.dataset.act;
+    if (act === "edit") return editPost(p);
+    if (act === "reply") {
+      const input = det.querySelector("[name=reply]"), text = input.value.trim(); if (!text) return;
+      b.disabled = true;
+      await addDoc(collection(db, "posts", p.id, "replies"), { text, authorId: me, createdAt: serverTimestamp() });
+      await updateDoc(doc(db, "posts", p.id), { replyCount: increment(1), lastActivity: serverTimestamp() });
+      input.value = "";
+      await load();
+    } else if (act === "del-reply") {
+      if (!confirm("Delete this reply?")) return;
+      await deleteDoc(doc(db, "posts", p.id, "replies", b.closest("[data-rid]").dataset.rid));
+      await updateDoc(doc(db, "posts", p.id), { replyCount: increment(-1), lastActivity: p.lastActivity || p.createdAt });
+      await load();
+    } else if (act === "delete") {
+      if (!confirm(`Delete "${p.subject}", its replies and its files? This can't be undone.`)) return;
+      const rs = await getDocs(collection(db, "posts", p.id, "replies"));
+      await Promise.all(rs.docs.map(d => deleteDoc(d.ref)));
+      await Promise.all((p.attachments || []).flatMap(a => [a.path, a.thumbPath]).filter(Boolean)
+        .map(path => deleteObject(ref(storage, path)).catch(err => { if (err.code !== "storage/object-not-found") throw err; })));
+      await deleteDoc(doc(db, "posts", p.id));
+      toast("Post deleted");
+      await load();
+    }
+  } catch (err) { fail(err); }
+});
+
+/* ---------- new / edit ---------- */
+function editPost(p) {
+  const dlg = document.getElementById("dlg"), f = dlg.querySelector("form"), status = document.getElementById("dlg-status");
+  document.getElementById("dlg-title").textContent = p ? "Edit post" : "New post";
+  f.querySelector("[value=save]").textContent = p ? "Save" : "Post";
+  f.subject.value = p?.subject || ""; f.body.value = p?.body || ""; f.links.value = (p?.links || []).join("\n");
+  f.files.value = ""; f.otherTag.value = ""; status.textContent = "";
+  const chosen = new Set(p?.tags || []);
+  const allTags = [...new Set([...TAGS, ...posts.flatMap(x => x.tags || [])])].sort();
+  document.getElementById("tag-boxes").innerHTML = allTags.map(t =>
+    `<label style="display:flex;gap:4px;align-items:center;margin:0;font-weight:400"><input type="checkbox" value="${esc(t)}" ${chosen.has(t) ? "checked" : ""}>${esc(t)}</label>`).join("");
+  let keep = [...(p?.attachments || [])];
+  const showExisting = () => document.getElementById("existing").innerHTML = keep.map((a, i) =>
+    `<div>${isImage(a) ? "🖼️" : "📄"} ${esc(a.name)} <button class="linklike small" type="button" data-rm="${i}">remove</button></div>`).join("");
+  showExisting();
+  document.getElementById("existing").onclick = e => { const r = e.target.closest("[data-rm]"); if (r) { keep.splice(Number(r.dataset.rm), 1); showExisting(); } };
+
+  const save = f.querySelector("[value=save]");
+  save.onclick = async e => {
+    e.preventDefault();
+    if (!f.subject.value.trim()) return f.subject.reportValidity();
+    const files = [...f.files.files];
+    const tooBig = files.find(x => x.size > 20 * 1024 * 1024);
+    if (tooBig) return toast(`${tooBig.name} is larger than 20 MB.`, true);
+    save.disabled = true;
+    try {
+      const id = p?.id || doc(collection(db, "posts")).id;
+      const added = [];
+      for (const [n, file] of files.entries()) {
+        status.textContent = `Uploading ${n + 1} of ${files.length}…`;
+        const stem = `board/${id}/${Date.now()}-${n}`, meta = { customMetadata: { uploadedBy: me } };
+        const path = `${stem}-${file.name.replace(/[\\/#?]/g, "_")}`;
+        await uploadBytes(ref(storage, path), file, { contentType: file.type || "application/octet-stream", ...meta });
+        let thumbPath = null;
+        if (file.type.startsWith("image/")) {
+          const thumb = await makeThumb(file);
+          if (thumb) { thumbPath = `${stem}-thumb.jpg`; await uploadBytes(ref(storage, thumbPath), thumb, { contentType: "image/jpeg", ...meta }); }
+        }
+        added.push({ name: file.name, path, type: file.type || "", size: file.size, thumbPath });
+      }
+      // Files removed while editing are deleted from storage.
+      const removed = (p?.attachments || []).filter(a => !keep.includes(a));
+      await Promise.all(removed.flatMap(a => [a.path, a.thumbPath]).filter(Boolean)
+        .map(path => deleteObject(ref(storage, path)).catch(() => {})));
+      const tags = [...document.querySelectorAll("#tag-boxes input:checked")].map(i => i.value);
+      if (f.otherTag.value.trim()) tags.push(f.otherTag.value.trim());
+      const data = {
+        subject: f.subject.value.trim(), body: f.body.value.trim(), links: cleanLinks(f.links.value),
+        tags: [...new Set(tags)], attachments: [...keep, ...added],
+      };
+      if (p) await updateDoc(doc(db, "posts", id), { ...data, updatedAt: serverTimestamp() });
+      else await setDoc(doc(db, "posts", id), { ...data, authorId: me, createdAt: serverTimestamp(), lastActivity: serverTimestamp(), replyCount: 0 });
+      dlg.close();
+      toast(p ? "Post updated" : "Posted to the board");
+      await load();
+    } catch (err) { fail(err); }
+    save.disabled = false; status.textContent = "";
+  };
+  openDialog(dlg);
+}
+
+load().catch(fail);
+</script>
+</body>
+</html>

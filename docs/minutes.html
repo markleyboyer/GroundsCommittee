@@ -11,33 +11,68 @@
 <body>
 <main>
   <h1>Minutes archive</h1>
-  <p class="lede">Every set of minutes in one place. If you took minutes, upload them here. You can upload several files at once, for example when adding older minutes, and give each one its meeting date.</p>
+  <p class="lede">Every set of minutes in one place, in any format: Word, PDF, Google Docs (download as Word), photos of paper notes, or text pasted from an email. Each one is rewritten into the same standard layout, summarized, and checked for issues to suggest on the <a href="issues.html">Issues</a> page. The original file is always kept.</p>
 
   <details class="card cream" id="upload-box">
-    <summary style="cursor:pointer;font-weight:600;color:var(--green)">Upload minutes</summary>
-    <label for="files">Files (PDF, Word, text, or images)</label>
-    <input id="files" type="file" multiple accept=".pdf,.doc,.docx,.txt,.rtf,.odt,.md,image/*">
-    <div id="pending" class="stack" style="margin-top:12px"></div>
+    <summary style="cursor:pointer;font-weight:600;color:var(--green)">Add minutes</summary>
+    <div class="row" style="margin-top:6px">
+      <label style="flex:0 0 auto;display:flex;gap:6px;align-items:center;font-weight:500"><input type="radio" name="mode" value="file" checked> Upload files</label>
+      <label style="flex:0 0 auto;display:flex;gap:6px;align-items:center;font-weight:500"><input type="radio" name="mode" value="paste"> Paste text (e.g. from an email)</label>
+    </div>
+
+    <div id="file-mode">
+      <label for="files">Files (PDF, Word .docx, text, or photos)</label>
+      <input id="files" type="file" multiple accept=".pdf,.docx,.txt,.md,.rtf,image/*">
+      <p class="small muted" style="margin:4px 0 0">Google Doc? In the doc choose File → Download → Microsoft Word (.docx), then upload that.</p>
+      <div id="pending" class="stack" style="margin-top:12px"></div>
+    </div>
+
+    <div id="paste-mode" class="hidden">
+      <div class="row">
+        <div><label>Meeting date</label><input type="date" id="p-date"></div>
+        <div><label>Minutes taken by</label><select id="p-taker"></select></div>
+      </div>
+      <label>Minutes text</label>
+      <textarea id="p-text" style="min-height:220px" placeholder="Paste the minutes here. Email headers and signatures are fine; they're removed when the standard version is made."></textarea>
+    </div>
+
     <div class="actions hidden" id="upload-actions">
-      <button class="btn" id="upload-btn">Upload</button>
+      <button class="btn" id="upload-btn">Add to archive</button>
       <span id="upload-status" class="small muted"></span>
     </div>
   </details>
 
   <div class="toolbar" style="margin-top:24px">
-    <input id="q" type="search" placeholder="Search file names and notes…">
+    <input id="q" type="search" placeholder="Search minutes…">
     <select id="year"><option value="">All years</option></select>
+    <span class="spacer"></span>
+    <button class="btn secondary small admin-only hidden" id="analyze-all" title="Rewrite, summarize and suggest issues for every set of minutes not yet processed">Process older minutes with AI</button>
   </div>
+  <div id="analyze-out" class="notice hidden"></div>
   <div id="list"><p class="empty">Loading…</p></div>
 </main>
+
+<dialog id="reader" style="width:min(820px,calc(100vw - 32px))">
+  <div class="dlg-body">
+    <div class="actions" style="margin-top:0;justify-content:flex-end">
+      <button class="btn secondary small" id="r-original">Original file</button>
+      <button class="btn small" data-close>Close</button>
+    </div>
+    <article id="r-body" class="md" style="max-height:70vh;overflow:auto"></article>
+  </div>
+</dialog>
+
 <script type="module">
-import { startPage, db, storage, esc, fmtDate, fmtStamp, todayISO, fail, toast } from "./js/app.js";
-import { collection, getDocs, query, orderBy, doc, setDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { startPage, db, storage, callFn, esc, fmtDate, fmtStamp, todayISO, fail, toast, openDialog } from "./js/app.js";
+import { collection, getDocs, getDoc, query, orderBy, doc, setDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import { ref, uploadBytes, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js";
+import { marked } from "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
+import DOMPurify from "https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.es.mjs";
 
 const ctx = await startPage({ page: "minutes.html" });
 const me = ctx.user.uid;
-let docs = [], meetings = [];
+if (ctx.isAdmin) document.querySelectorAll(".admin-only").forEach(e => e.classList.remove("hidden"));
+let docs = [], meetings = [], texts = {};
 
 async function load() {
   const [ms, mt] = await Promise.all([
@@ -46,46 +81,81 @@ async function load() {
   ]);
   docs = ms.docs.map(d => ({ id: d.id, ...d.data() }));
   meetings = mt.docs.map(d => ({ id: d.id, ...d.data() }));
+  // Standardized text + summaries are members-only (the guest demo sees the list but not the contents).
+  if (!ctx.isDemo) {
+    const ts = await getDocs(collection(db, "minutesText"));
+    texts = Object.fromEntries(ts.docs.map(d => [d.id, d.data()]));
+  }
   const years = [...new Set(docs.map(d => d.meetingDate.slice(0, 4)))];
   const sel = document.getElementById("year"), cur = sel.value;
   sel.innerHTML = `<option value="">All years</option>` + years.map(y => `<option ${y === cur ? "selected" : ""}>${y}</option>`).join("");
   render();
+  schedulePoll();
+}
+
+function aiCell(d) {
+  const t = texts[d.id];
+  if (t?.markdown) return `<button class="btn small" data-read="${d.id}">Read</button>`;
+  if (d.aiStatus === "error" || d.aiStatus === "skipped")
+    return `<span class="chip red" title="${esc(d.aiError || "")}">Not processed</span>${ctx.isAdmin && d.aiStatus === "error" ? ` <button class="linklike small" data-retry="${d.id}">retry</button>` : ""}`;
+  if (ctx.isDemo) return "";
+  return `<span class="chip grey">Processing…</span>`;
 }
 
 function render() {
   const q = document.getElementById("q").value.trim().toLowerCase();
   const y = document.getElementById("year").value;
   const shown = docs.filter(d => (!y || d.meetingDate.startsWith(y)) &&
-    (!q || `${d.fileName} ${d.notes || ""} ${ctx.nameOf(d.uploadedBy)}`.toLowerCase().includes(q)));
-  if (!shown.length) { document.getElementById("list").innerHTML = `<p class="empty">${docs.length ? "Nothing matches." : "No minutes uploaded yet."}</p>`; return; }
+    (!q || `${d.fileName} ${d.notes || ""} ${ctx.nameOf(d.takenBy)} ${texts[d.id]?.summary || ""} ${texts[d.id]?.markdown || ""}`.toLowerCase().includes(q)));
+  if (!shown.length) { document.getElementById("list").innerHTML = `<p class="empty">${docs.length ? "Nothing matches." : "No minutes added yet."}</p>`; return; }
   let html = "", year = "";
   for (const d of shown) {
     const yy = d.meetingDate.slice(0, 4);
-    if (yy !== year) { if (year) html += `</tbody></table></div>`; year = yy; html += `<h2>${yy}</h2><div class="table-wrap"><table class="data"><thead><tr><th>Meeting</th><th>File</th><th>Taken by</th><th>Notes</th><th></th></tr></thead><tbody>`; }
-    const taker = d.takenBy ? ctx.nameOf(d.takenBy) : "";
+    if (yy !== year) { if (year) html += `</tbody></table></div>`; year = yy; html += `<h2>${yy}</h2><div class="table-wrap"><table class="data"><thead><tr><th>Meeting</th><th>Minutes</th><th>Taken by</th><th></th></tr></thead><tbody>`; }
+    const summary = texts[d.id]?.summary;
     html += `<tr>
-      <td><strong>${fmtDate(d.meetingDate)}</strong></td>
-      <td><button class="linklike" data-open="${d.id}">${esc(d.fileName)}</button></td>
-      <td>${esc(taker)}<div class="small muted">uploaded ${fmtStamp(d.uploadedAt)}${d.uploadedBy !== d.takenBy ? " by " + esc(ctx.nameOf(d.uploadedBy)) : ""}</div></td>
-      <td class="small">${esc(d.notes || "")}</td>
+      <td style="min-width:150px"><strong>${fmtDate(d.meetingDate)}</strong></td>
+      <td>${aiCell(d)} <button class="linklike small" data-open="${d.id}">original: ${esc(d.fileName)}</button>
+        ${summary ? `<div class="small" style="margin-top:6px;max-width:60ch">${esc(summary)}</div>` : ""}
+        ${d.notes ? `<div class="small muted">${esc(d.notes)}</div>` : ""}</td>
+      <td>${esc(d.takenBy ? ctx.nameOf(d.takenBy) : "")}<div class="small muted">added ${fmtStamp(d.uploadedAt)}${d.uploadedBy !== d.takenBy ? " by " + esc(ctx.nameOf(d.uploadedBy)) : ""}</div></td>
       <td>${d.uploadedBy === me || ctx.isAdmin ? `<button class="btn danger small" data-del="${d.id}">Delete</button>` : ""}</td>
     </tr>`;
   }
   document.getElementById("list").innerHTML = html + `</tbody></table></div>`;
 }
 
+// While anything uploaded recently is still being processed, refresh every 10 seconds.
+let pollTimer = null;
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  const recent = Date.now() - 20 * 60 * 1000;
+  const busy = !ctx.isDemo && docs.some(d => !texts[d.id]?.markdown && !["error", "skipped"].includes(d.aiStatus)
+    && (d.aiStatus === "working" || (d.uploadedAt?.toMillis?.() || 0) > recent));
+  if (busy) pollTimer = setTimeout(() => load().catch(fail), 10000);
+}
+
 document.getElementById("q").oninput = render;
 document.getElementById("year").onchange = render;
 
+const openOriginal = async d => window.open(await getDownloadURL(ref(storage, d.storagePath)), "_blank", "noopener");
+
 document.getElementById("list").onclick = async e => {
-  const o = e.target.closest("[data-open]"), del = e.target.closest("[data-del]");
+  const o = e.target.closest("[data-open]"), del = e.target.closest("[data-del]"), rd = e.target.closest("[data-read]"), rt = e.target.closest("[data-retry]");
   try {
-    if (o) {
-      const d = docs.find(x => x.id === o.dataset.open);
-      window.open(await getDownloadURL(ref(storage, d.storagePath)), "_blank", "noopener");
+    if (o) await openOriginal(docs.find(x => x.id === o.dataset.open));
+    else if (rd) {
+      const d = docs.find(x => x.id === rd.dataset.read);
+      document.getElementById("r-body").innerHTML = DOMPurify.sanitize(marked.parse(texts[d.id].markdown));
+      document.getElementById("r-original").onclick = () => openOriginal(d).catch(fail);
+      openDialog(document.getElementById("reader"));
+    } else if (rt) {
+      rt.disabled = true; toast("Processing… this can take a minute.");
+      await callFn("analyzeArchive", { minutesIds: [rt.dataset.retry] });
+      await load();
     } else if (del) {
       const d = docs.find(x => x.id === del.dataset.del);
-      if (!confirm(`Delete "${d.fileName}"? This can't be undone.`)) return;
+      if (!confirm(`Delete the ${fmtDate(d.meetingDate)} minutes ("${d.fileName}")? This can't be undone.`)) return;
       await deleteObject(ref(storage, d.storagePath)).catch(err => { if (err.code !== "storage/object-not-found") throw err; });
       await deleteDoc(doc(db, "minutes", d.id));
       toast("Deleted");
@@ -94,7 +164,22 @@ document.getElementById("list").onclick = async e => {
   } catch (err) { fail(err); }
 };
 
-/* ---------- upload ---------- */
+document.getElementById("analyze-all").onclick = async () => {
+  const todo = docs.filter(d => !texts[d.id]?.markdown || d.aiStatus !== "done").length;
+  if (!todo) return toast("Every set of minutes has already been processed.");
+  if (!confirm(`Process ${todo} set${todo > 1 ? "s" : ""} of minutes with AI? This makes standard versions and summaries, and suggests issues for review. It can take a few minutes.`)) return;
+  const btn = document.getElementById("analyze-all"), out = document.getElementById("analyze-out");
+  btn.disabled = true; out.classList.remove("hidden"); out.textContent = "Working… you can leave this page open.";
+  try {
+    const r = await callFn("analyzeArchive", {});
+    out.innerHTML = `Done: ${r.analyzed} processed${r.skipped ? `, ${r.skipped} skipped (format not readable)` : ""}${r.failed ? `, ${r.failed} failed` : ""}. ` +
+      `${r.newIssues} new issue${r.newIssues === 1 ? "" : "s"} and ${r.updates} update${r.updates === 1 ? "" : "s"} suggested. <a href="issues.html">Review them on the Issues page</a>.`;
+  } catch (err) { out.textContent = ""; out.classList.add("hidden"); fail(err); }
+  btn.disabled = false;
+  await load();
+};
+
+/* ---------- adding minutes ---------- */
 // Guess a meeting date from names like "2024-03-04 minutes.pdf", "Minutes 3-4-24.docx" or "March 2024.pdf".
 function guessDate(name) {
   let m = name.match(/(20\d\d)[-_. ](\d{1,2})[-_. ](\d{1,2})/);
@@ -107,57 +192,79 @@ function guessDate(name) {
     const ym = `${m[2]}-${String(months.indexOf(m[1]) + 1).padStart(2, "0")}`;
     return meetings.find(x => x.date.startsWith(ym))?.date || `${ym}-01`;
   }
-  // default: most recent meeting that has happened
-  return meetings.find(x => x.date <= todayISO() && x.status !== "cancelled")?.date || todayISO();
+  return lastMeeting();
 }
+const lastMeeting = () => meetings.find(x => x.date <= todayISO() && x.status !== "cancelled")?.date || todayISO();
+const takerOptions = () => `<option value="">Unknown</option>` + ctx.roster.list.map(r => `<option value="${r.uid}">${esc(r.name)}</option>`).join("");
 
-let pending = [];
+let mode = "file", pending = [];
+const showActions = () => document.getElementById("upload-actions").classList.toggle("hidden",
+  mode === "file" ? !pending.length : !document.getElementById("p-text").value.trim());
+
+document.querySelectorAll("[name=mode]").forEach(r => r.onchange = () => {
+  mode = document.querySelector("[name=mode]:checked").value;
+  document.getElementById("file-mode").classList.toggle("hidden", mode !== "file");
+  document.getElementById("paste-mode").classList.toggle("hidden", mode !== "paste");
+  if (mode === "paste") {
+    const pd = document.getElementById("p-date"); if (!pd.value) pd.value = lastMeeting();
+    const pt = document.getElementById("p-taker"); if (!pt.options.length) { pt.innerHTML = takerOptions(); pt.value = meetings.find(m => m.date === pd.value)?.minuteTaker || ""; }
+  }
+  showActions();
+});
+document.getElementById("p-text").oninput = showActions;
+
 document.getElementById("files").onchange = e => {
   pending = [...e.target.files].map(f => ({ file: f, date: guessDate(f.name) }));
-  const opts = ctx.roster.list.map(r => `<option value="${r.uid}">${esc(r.name)}</option>`).join("");
   document.getElementById("pending").innerHTML = pending.map((p, i) => `
     <div class="card" data-i="${i}">
       <strong class="small">${esc(p.file.name)}</strong>
       <div class="row">
         <div><label>Meeting date</label><input type="date" name="date" value="${p.date}" required></div>
-        <div><label>Minutes taken by</label><select name="takenBy"><option value="">Unknown</option>${opts}</select></div>
+        <div><label>Minutes taken by</label><select name="takenBy">${takerOptions()}</select></div>
       </div>
-      <label>Notes (optional): the main topics, so people can search for them</label>
-      <input name="notes" placeholder="e.g. Bulb order, Building 4 drainage, fall cleanup contract">
     </div>`).join("");
   document.querySelectorAll("#pending [data-i]").forEach(card => {
     const meeting = meetings.find(m => m.date === card.querySelector("[name=date]").value);
     card.querySelector("[name=takenBy]").value = meeting?.minuteTaker || (pending.length === 1 ? me : "");
   });
-  document.getElementById("upload-actions").classList.toggle("hidden", !pending.length);
+  showActions();
 };
+
+async function addOne(file, date, takenBy) {
+  const id = doc(collection(db, "minutes")).id;
+  const storagePath = `minutes/${id}/${file.name}`;
+  await uploadBytes(ref(storage, storagePath), file, { contentType: file.type || "application/octet-stream", customMetadata: { uploadedBy: me } });
+  await setDoc(doc(db, "minutes", id), {
+    meetingDate: date, fileName: file.name, storagePath, contentType: file.type || "",
+    size: file.size, notes: "", takenBy: takenBy || null, uploadedBy: me, uploadedAt: serverTimestamp(),
+  });
+}
 
 document.getElementById("upload-btn").onclick = async () => {
   const btn = document.getElementById("upload-btn"), status = document.getElementById("upload-status");
   btn.disabled = true;
   try {
-    const cards = [...document.querySelectorAll("#pending [data-i]")];
-    for (const [n, card] of cards.entries()) {
-      const p = pending[card.dataset.i];
-      const date = card.querySelector("[name=date]").value;
-      if (!date) throw new Error(`Please give ${p.file.name} a meeting date.`);
-      status.textContent = `Uploading ${n + 1} of ${cards.length}…`;
-      const id = doc(collection(db, "minutes")).id;
-      const storagePath = `minutes/${id}/${p.file.name}`;
-      await uploadBytes(ref(storage, storagePath), p.file, { contentType: p.file.type || "application/octet-stream", customMetadata: { uploadedBy: me } });
-      await setDoc(doc(db, "minutes", id), {
-        meetingDate: date, fileName: p.file.name, storagePath, contentType: p.file.type || "",
-        size: p.file.size, notes: card.querySelector("[name=notes]").value.trim(),
-        takenBy: card.querySelector("[name=takenBy]").value || null,
-        uploadedBy: me, uploadedAt: serverTimestamp(),
-      });
+    let n = 0;
+    if (mode === "paste") {
+      const date = document.getElementById("p-date").value;
+      if (!date) throw new Error("Please give the meeting date.");
+      const file = new File([document.getElementById("p-text").value], `${date} Grounds Committee minutes.txt`, { type: "text/plain" });
+      status.textContent = "Adding…";
+      await addOne(file, date, document.getElementById("p-taker").value);
+      document.getElementById("p-text").value = ""; n = 1;
+    } else {
+      const cards = [...document.querySelectorAll("#pending [data-i]")];
+      for (const card of cards) {
+        const p = pending[card.dataset.i], date = card.querySelector("[name=date]").value;
+        if (!date) throw new Error(`Please give ${p.file.name} a meeting date.`);
+        status.textContent = `Uploading ${++n} of ${cards.length}…`;
+        await addOne(p.file, date, card.querySelector("[name=takenBy]").value);
+      }
+      pending = []; document.getElementById("files").value = ""; document.getElementById("pending").innerHTML = "";
     }
-    toast(`Uploaded ${cards.length} file${cards.length > 1 ? "s" : ""}. Thank you!`);
-    pending = [];
-    document.getElementById("files").value = "";
-    document.getElementById("pending").innerHTML = "";
-    document.getElementById("upload-actions").classList.add("hidden");
+    toast(`Added ${n} set${n > 1 ? "s" : ""} of minutes. The standard version and summary will appear in a minute or two.`);
     status.textContent = "";
+    showActions();
     await load();
   } catch (err) { fail(err); status.textContent = ""; }
   btn.disabled = false;

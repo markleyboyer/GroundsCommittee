@@ -80,6 +80,7 @@ const NAV = [
   ["issues.html", "Issues"],
   ["calendar.html", "Committee Year"],
   ["bulbs.html", "Bulbs"],
+  ["board.html", "Bulletin Board"],
   ["trees/", "Tree Map"],
 ];
 

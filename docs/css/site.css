@@ -176,3 +176,33 @@ dialog h3 { margin-top: 0; }
 body.demo main .btn, body.demo main [data-act], body.demo main details, body.demo dialog { display: none !important; }
 body.demo [data-open] { pointer-events: none; color: inherit; text-decoration: none; }
 body.demo main .notice .btn { display: inline-flex !important; }
+
+/* standardized minutes (rendered Markdown) */
+.md h1 { font-size: 1.9rem; margin: 0 0 10px; }
+.md h2 { font-size: 1.35rem; margin: 20px 0 6px; }
+.md h3 { font-size: 1.1rem; margin: 14px 0 4px; }
+.md p, .md li { font-size: .95rem; }
+.md ul, .md ol { padding-left: 22px; margin: 4px 0 10px; }
+.md li { margin: 3px 0; }
+.md input[type=checkbox] { margin-right: 6px; }
+
+/* AI suggestions on the Issues page */
+.suggestion { border-left: 4px solid var(--gold); }
+.suggestion + .suggestion { margin-top: 10px; }
+
+/* bulletin board */
+.post { padding: 0; }
+.post > summary { list-style: none; cursor: pointer; }
+.post > summary::-webkit-details-marker { display: none; }
+.post-row { display: grid; grid-template-columns: 56px 1fr auto; gap: 12px; align-items: center; padding: 10px 14px; }
+.post[open] .post-row { border-bottom: 1px solid #f0ead8; }
+.post-thumb { width: 56px; height: 56px; border-radius: var(--radius); background: var(--cream-2); display: flex; align-items: center; justify-content: center; overflow: hidden; font-size: 1.4rem; }
+.post-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.post-subject { font-weight: 600; color: var(--green-deep); }
+.post-count { text-align: right; white-space: nowrap; }
+.post-body { padding: 0 16px 14px; }
+.post-links { margin: 6px 0; padding-left: 20px; font-size: .92rem; word-break: break-all; }
+.post-gallery { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.post-gallery img { height: 140px; max-width: 100%; border-radius: var(--radius); border: 1px solid var(--line); object-fit: cover; background: var(--cream-2); }
+.post-file { display: inline-block; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; text-decoration: none; }
+@media (max-width: 600px) { .post-row { grid-template-columns: 44px 1fr; } .post-thumb { width: 44px; height: 44px; } .post-count { grid-column: 2; text-align: left; } }

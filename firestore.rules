@@ -68,6 +68,42 @@ service cloud.firestore {
       allow delete: if isAdmin() || (isMember() && isMine('createdBy'));
     }
 
+    // Standardized text + summary of each set of minutes (written by Cloud Functions).
+    // Members only: the guest demo can list minutes but not read them.
+    match /minutesText/{id} {
+      allow read: if isMember();
+      allow write: if false;
+    }
+
+    // AI suggestions from minutes (written by Cloud Functions); members accept or dismiss them.
+    match /suggestions/{id} {
+      allow read: if isActive();
+      allow update: if isMember() && resource.data.state == 'pending'
+        && changesOnly(['state', 'decidedBy', 'decidedAt', 'createdIssueId'])
+        && request.resource.data.state in ['accepted', 'dismissed']
+        && request.resource.data.decidedBy == request.auth.uid;
+      allow create, delete: if false;
+    }
+
+    // Bulletin Board: members only (not the guest demo). Authors edit their own posts and replies;
+    // any member may bump replyCount/lastActivity when replying; admins can delete anything.
+    match /posts/{id} {
+      allow read: if isMember();
+      allow create: if isMember() && request.resource.data.authorId == request.auth.uid;
+      allow update: if isMember() && (
+        (isMine('authorId') && request.resource.data.authorId == resource.data.authorId)
+        || changesOnly(['replyCount', 'lastActivity']));
+      allow delete: if isAdmin() || (isMember() && isMine('authorId'));
+
+      match /replies/{rid} {
+        allow read: if isMember();
+        allow create: if isMember() && request.resource.data.authorId == request.auth.uid;
+        allow update: if isMember() && isMine('authorId') && request.resource.data.authorId == resource.data.authorId;
+        allow delete: if isAdmin() || (isMember() && (isMine('authorId')
+          || get(/databases/$(database)/documents/posts/$(id)).data.authorId == request.auth.uid));
+      }
+    }
+
     match /calendar/{month} {
       allow read: if isActive();
       allow write: if isAdmin();

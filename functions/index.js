@@ -1,6 +1,6 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { onDocumentCreated, onDocumentWritten } = require("firebase-functions/v2/firestore");
+const { onDocumentCreated, onDocumentWritten, onDocumentDeleted } = require("firebase-functions/v2/firestore");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { defineSecret, defineString } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
@@ -198,3 +198,30 @@ exports.notifyTreasurer = onDocumentCreated({ document: "receipts/{id}", secrets
     `${by} uploaded a receipt for reimbursement.\n\nBuilding: ${r.building}\nSupplier: ${r.supplier}\nAmount: $${Number(r.amount).toFixed(2)}\n` +
     `Purchased: ${r.purchased}\n${r.notes ? `Notes: ${r.notes}\n` : ""}\nView it and mark it reimbursed:\n${page("bulbs.html#receipts-h")}`);
 });
+
+/* ---------------- AI: summarize minutes and suggest issues ---------------- */
+// Set with:  firebase functions:secrets:set ANTHROPIC_API_KEY
+const ANTHROPIC_API_KEY = defineSecret("ANTHROPIC_API_KEY");
+// Loaded on first use: the Anthropic SDK and Word reader would slow every other function's cold start.
+const analyzeMinutes = (...args) => require("./ai").analyzeMinutes(...args);
+const aiOptions = { secrets: [ANTHROPIC_API_KEY], timeoutSeconds: 540, memory: "1GiB" };
+
+// Every newly uploaded set of minutes is analyzed automatically.
+exports.analyzeNewMinutes = onDocumentCreated({ document: "minutes/{id}", ...aiOptions }, event =>
+  analyzeMinutes({ db, bucket: admin.storage().bucket(), apiKey: ANTHROPIC_API_KEY.value(), minutesIds: [event.params.id] }));
+
+// Admin button on the Minutes Archive: analyze minutes that haven't been (or one chosen set again).
+exports.analyzeArchive = onCall(aiOptions, async req => {
+  await requireAdmin(req);
+  let ids = req.data?.minutesIds;
+  if (!Array.isArray(ids) || !ids.length) {
+    const snap = await db.collection("minutes").get();
+    ids = snap.docs.filter(d => !["done", "working"].includes(d.data().aiStatus)).map(d => d.id);
+  }
+  if (!ids.length) return { analyzed: 0, skipped: 0, failed: 0, newIssues: 0, updates: 0 };
+  return analyzeMinutes({ db, bucket: admin.storage().bucket(), apiKey: ANTHROPIC_API_KEY.value(), minutesIds: ids.slice(0, 60) });
+});
+
+// When minutes are deleted, remove their standardized text too.
+exports.cleanUpMinutesText = onDocumentDeleted("minutes/{id}", event =>
+  db.doc(`minutesText/${event.params.id}`).delete());

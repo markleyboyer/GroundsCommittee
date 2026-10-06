@@ -15,6 +15,12 @@
 
   <div class="stat-row" id="stats"></div>
 
+  <section id="sugg" class="card cream hidden" style="margin-bottom:24px">
+    <h2 style="margin-top:0">Suggested from minutes</h2>
+    <p class="small muted" style="margin-top:-6px">AI read the minutes and suggests these. Nothing is added to the issue list until a member accepts it. Check that it's right; use <strong>Edit, then add</strong> to fix the wording first.</p>
+    <div id="sugg-list"></div>
+  </section>
+
   <div class="toolbar">
     <input id="q" type="search" placeholder="Search issues…">
     <select id="f-status">
@@ -58,16 +64,21 @@
 
 <script type="module">
 import { startPage, db, esc, fmtDate, todayISO, fail, toast, openDialog, BUILDINGS } from "./js/app.js";
-import { collection, getDocs, doc, addDoc, updateDoc, deleteDoc, arrayUnion, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { collection, getDocs, doc, addDoc, updateDoc, deleteDoc, arrayUnion, serverTimestamp, query, where, writeBatch } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 const ctx = await startPage({ page: "issues.html" });
 const me = ctx.user.uid;
 const STATUS_CHIP = { "open": "gold", "in progress": "", "waiting": "clay", "resolved": "grey" };
 const DEFAULT_AREAS = ["Grounds-wide", ...BUILDINGS, "Trees", "Lawns", "Plantings & beds", "Paths & lighting", "Playground", "Budget", "Contractors"];
-let issues = [];
+let issues = [], suggestions = [];
 
 async function load() {
-  const snap = await getDocs(collection(db, "issues"));
+  const [snap, sg] = await Promise.all([
+    getDocs(collection(db, "issues")),
+    getDocs(query(collection(db, "suggestions"), where("state", "==", "pending"))),
+  ]);
+  suggestions = sg.docs.map(d => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => (a.kind === "update") - (b.kind === "update") || (a.firstRaised || a.updates?.[0]?.date || "").localeCompare(b.firstRaised || b.updates?.[0]?.date || ""));
   issues = snap.docs.map(d => ({ id: d.id, ...d.data() }))
     .sort((a, b) => (a.status === "resolved") - (b.status === "resolved") || (b.lastUpdate || "").localeCompare(a.lastUpdate || ""));
   const areas = [...new Set([...DEFAULT_AREAS, ...issues.map(i => i.area).filter(Boolean)])];
@@ -75,7 +86,89 @@ async function load() {
   const fa = document.getElementById("f-area"), cur = fa.value;
   fa.innerHTML = `<option value="">All areas</option>` + [...new Set(issues.map(i => i.area).filter(Boolean))].sort().map(a => `<option ${a === cur ? "selected" : ""}>${esc(a)}</option>`).join("");
   render();
+  renderSuggestions();
 }
+
+/* ---------------- AI suggestions ---------------- */
+const shortDate = d => d ? fmtDate(d, { month: "short", day: "numeric", year: "numeric" }) : "";
+const updatesList = ups => (ups || []).length ? `<ul class="updates">${ups.map(u => `<li>${esc(u.text)}<span class="meta">${shortDate(u.date)}</span></li>`).join("")}</ul>` : "";
+
+function renderSuggestions() {
+  const box = document.getElementById("sugg");
+  box.classList.toggle("hidden", !suggestions.length);
+  document.getElementById("sugg-list").innerHTML = suggestions.map(s => {
+    const target = s.kind === "update" ? issues.find(i => i.id === s.issueId) : null;
+    if (s.kind === "update" && !target) return "";
+    const buttons = `<div class="actions"><button class="btn small" data-sact="accept">Accept</button>${s.kind === "new" ? `<button class="btn secondary small" data-sact="edit">Edit, then add</button>` : ""}<button class="btn secondary small" data-sact="dismiss">Dismiss</button></div>`;
+    return s.kind === "new" ? `
+      <article class="item suggestion" data-sid="${s.id}">
+        <header><span class="chip gold">New issue</span><h3>${esc(s.title)}</h3><span class="chip ${STATUS_CHIP[s.status] ?? ""}">${esc(s.status)}</span>${s.area ? `<span class="chip grey">${esc(s.area)}</span>` : ""}</header>
+        <div class="meta">First raised ${shortDate(s.firstRaised)}${s.lead ? ` · Lead: ${esc(s.lead)}` : ""}</div>
+        ${s.description ? `<p style="margin:8px 0 0">${esc(s.description)}</p>` : ""}
+        ${updatesList(s.updates)}${buttons}
+      </article>` : `
+      <article class="item suggestion" data-sid="${s.id}">
+        <header><span class="chip">Update</span><h3>${esc(target.title)}</h3>${s.status && s.status !== target.status ? `<span class="small muted">status: ${esc(target.status)} &rarr; <strong>${esc(s.status)}</strong></span>` : ""}</header>
+        ${updatesList(s.updates)}${buttons}
+      </article>`;
+  }).join("");
+}
+
+// Match a lead's name from the minutes to a member, if it's unambiguous.
+function leadToUid(name) {
+  const n = (name || "").trim().toLowerCase(); if (!n) return null;
+  const exact = ctx.roster.list.filter(r => r.name.toLowerCase() === n);
+  const first = ctx.roster.list.filter(r => r.name.toLowerCase().split(" ")[0] === n.split(" ")[0]);
+  return (exact.length === 1 ? exact[0] : first.length === 1 ? first[0] : null)?.uid || null;
+}
+const decided = state => ({ state, decidedBy: me, decidedAt: serverTimestamp() });
+const toIssueUpdates = s => (s.updates || []).map(u => ({ date: u.date || todayISO(), text: u.text, by: me, fromMinutes: u.minutesId || true }));
+
+/** Create the issue for a "new" suggestion (with any edits) and mark the suggestion accepted, together. */
+async function acceptNew(s, data) {
+  const batch = writeBatch(db), issueRef = doc(collection(db, "issues"));
+  const updates = toIssueUpdates(s);
+  const last = updates.length ? updates[updates.length - 1].date : (data.firstRaised || todayISO());
+  batch.set(issueRef, {
+    ...data, updates, createdBy: me, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    lastUpdate: last, ...(data.status === "resolved" ? { resolvedOn: last } : {}), source: "minutes",
+  });
+  batch.update(doc(db, "suggestions", s.id), { ...decided("accepted"), createdIssueId: issueRef.id });
+  await batch.commit();
+}
+
+document.getElementById("sugg-list").onclick = async e => {
+  const b = e.target.closest("[data-sact]"); if (!b) return;
+  const s = suggestions.find(x => x.id === b.closest("[data-sid]").dataset.sid);
+  try {
+    if (b.dataset.sact === "dismiss") {
+      await updateDoc(doc(db, "suggestions", s.id), decided("dismissed"));
+    } else if (b.dataset.sact === "edit") {
+      return edit(null, s);
+    } else if (s.kind === "new") {
+      const owner = leadToUid(s.lead);
+      await acceptNew(s, {
+        title: s.title, description: s.description + (s.lead && !owner ? `\nLead (from minutes): ${s.lead}` : ""),
+        area: s.area || "", status: s.status || "open", owner, contact: "", firstRaised: s.firstRaised || null,
+      });
+      toast("Added to the issue list");
+    } else {
+      const target = issues.find(i => i.id === s.issueId);
+      const ups = toIssueUpdates(s), last = ups[ups.length - 1]?.date || todayISO();
+      const batch = writeBatch(db), patch = { updates: arrayUnion(...ups), updatedAt: serverTimestamp() };
+      if (last >= (target.lastUpdate || "")) patch.lastUpdate = last;
+      if (s.status && s.status !== target.status) {
+        patch.status = s.status;
+        if (s.status === "resolved") patch.resolvedOn = last;
+      }
+      batch.update(doc(db, "issues", target.id), patch);
+      batch.update(doc(db, "suggestions", s.id), decided("accepted"));
+      await batch.commit();
+      toast("Update added");
+    }
+    await load();
+  } catch (err) { fail(err); }
+};
 
 function render() {
   const count = s => issues.filter(i => i.status === s).length;
@@ -103,7 +196,7 @@ function render() {
       </header>
       <div class="meta">${i.firstRaised ? `First raised ${fmtDate(i.firstRaised, { month: "short", year: "numeric" })}` : ""}${i.owner ? ` · Lead: ${esc(ctx.nameOf(i.owner))}` : ""}${i.contact ? ` · Waiting on: ${esc(i.contact)}` : ""}</div>
       ${i.description ? `<p style="margin:8px 0 0;white-space:pre-wrap">${esc(i.description)}</p>` : ""}
-      ${(i.updates || []).length ? `<ul class="updates">${[...i.updates].reverse().map(u => `<li>${esc(u.text)}<span class="meta">${fmtDate(u.date, { month: "short", day: "numeric", year: "numeric" })} · ${esc(ctx.nameOf(u.by))}</span></li>`).join("")}</ul>` : ""}
+      ${(i.updates || []).length ? `<ul class="updates">${[...i.updates].reverse().map(u => `<li>${esc(u.text)}<span class="meta">${fmtDate(u.date, { month: "short", day: "numeric", year: "numeric" })} · ${u.fromMinutes ? "from the minutes" : esc(ctx.nameOf(u.by))}</span></li>`).join("")}</ul>` : ""}
       <details style="margin-top:10px"><summary class="small" style="cursor:pointer;color:var(--green)">Add an update</summary>
         <div class="row" style="align-items:flex-end">
           <div style="flex:3 1 260px"><label>Update</label><input name="u-text" placeholder="What happened?"></div>
@@ -137,14 +230,18 @@ document.getElementById("list").onclick = async e => {
 
 document.getElementById("new").onclick = () => edit(null);
 
-function edit(issue) {
+function edit(issue, sugg = null) {
   const dlg = document.getElementById("dlg"), f = dlg.querySelector("form");
-  document.getElementById("dlg-title").textContent = issue ? "Edit issue" : "New issue";
+  document.getElementById("dlg-title").textContent = issue ? "Edit issue" : sugg ? "Add suggested issue" : "New issue";
   document.getElementById("dlg-del").classList.toggle("hidden", !(issue && (issue.createdBy === me || ctx.isAdmin)));
   f.owner.innerHTML = `<option value="">—</option>` + ctx.roster.list.map(r => `<option value="${r.uid}">${esc(r.name)}</option>`).join("");
   f.title.value = issue?.title || ""; f.description.value = issue?.description || ""; f.area.value = issue?.area || "";
   f.status.value = issue?.status || "open"; f.owner.value = issue?.owner || ""; f.contact.value = issue?.contact || "";
   f.firstRaised.value = issue?.firstRaised || todayISO();
+  if (sugg) {
+    f.title.value = sugg.title || ""; f.description.value = sugg.description || ""; f.area.value = sugg.area || "";
+    f.status.value = sugg.status || "open"; f.owner.value = leadToUid(sugg.lead) || ""; f.firstRaised.value = sugg.firstRaised || todayISO();
+  }
   dlg.returnValue = "";
   dlg.onclose = async () => {
     try {
@@ -156,6 +253,7 @@ function edit(issue) {
         };
         if (data.status === "resolved" && issue?.status !== "resolved") data.resolvedOn = todayISO();
         if (issue) await updateDoc(doc(db, "issues", issue.id), data);
+        else if (sugg) { delete data.updatedAt; await acceptNew(sugg, data); }
         else await addDoc(collection(db, "issues"), { ...data, updates: [], createdBy: me, createdAt: serverTimestamp(), lastUpdate: todayISO() });
         toast("Saved");
       } else if (dlg.returnValue === "delete") {
